@@ -22,9 +22,18 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
   | Endereços IP | visão `display ip interface brief`, adicionar/remover IPs |
   | VLANs | criar/remover VLAN, porta em modo *access* e *trunk* |
   | Rotas | tabela de roteamento, criar/remover rotas estáticas |
+  | ARP | tabela IP/MAC, criar/remover entradas estáticas |
   | BGP | vizinhos (`display bgp peer`), habilitar processo, criar/remover peer, anunciar redes |
   | OSPF | vizinhanças (`display ospf peer brief`), habilitar processo, redes por área |
   | MPLS / LDP | sessões LDP, habilitar MPLS+LDP global e por interface |
+  | Servidor DHCP | pools (`display ip pool`), criar/remover pool, ativar por interface |
+  | NAT | NAT de saída (easy-ip por ACL) e redirecionamento de portas (NAT server) |
+  | ACL / Firewall | regras permit/deny, aplicar `traffic-filter` nas interfaces |
+  | Usuários | contas locais AAA: criar/remover, privilégio e serviços (protege o usuário da sessão) |
+  | Vizinhos (LLDP) | descoberta de equipamentos conectados, como o *Neighbors* do WinBox |
+  | Serviços | NTP, comunidade SNMP v2c, SSH (STelnet) e LLDP |
+  | Logs | `display logbuffer` com filtro por texto |
+  | Ferramentas | ping e traceroute executados a partir do equipamento |
   | Sistema | versão, CPU, memória, uptime, renomear (`sysname`), **salvar configuração** |
   | Novo Terminal | console CLI integrado usando a mesma sessão SSH |
 
@@ -76,6 +85,10 @@ huawei_winbox/
 ```
 
 ## Avisos
+
+- O aplicativo força um tema claro próprio (estilo Fusion + paleta fixa),
+  então os textos permanecem legíveis mesmo com o sistema operacional em
+  modo escuro.
 
 - Testado contra a sintaxe do VRP clássico (séries AR, NE, S). Versões
   diferentes podem variar em alguns `display`; os parsers ignoram linhas

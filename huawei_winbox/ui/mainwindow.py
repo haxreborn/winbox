@@ -15,9 +15,18 @@ from .panels.interfaces import InterfacesPanel
 from .panels.addresses import AddressesPanel
 from .panels.vlans import VlansPanel
 from .panels.routes import RoutesPanel
+from .panels.arp import ArpPanel
 from .panels.bgp import BgpPanel
 from .panels.ospf import OspfPanel
 from .panels.mpls import MplsPanel
+from .panels.dhcp import DhcpPanel
+from .panels.nat import NatPanel
+from .panels.acl import AclPanel
+from .panels.users import UsersPanel
+from .panels.lldp import LldpPanel
+from .panels.services import ServicesPanel
+from .panels.logs import LogsPanel
+from .panels.tools import ToolsPanel
 from .panels.system import SystemPanel
 from .panels.terminal import TerminalPanel
 
@@ -26,9 +35,18 @@ _MENU = [
     ("Endereços IP", AddressesPanel),
     ("VLANs", VlansPanel),
     ("Rotas", RoutesPanel),
+    ("ARP", ArpPanel),
     ("BGP", BgpPanel),
     ("OSPF", OspfPanel),
     ("MPLS / LDP", MplsPanel),
+    ("Servidor DHCP", DhcpPanel),
+    ("NAT", NatPanel),
+    ("ACL / Firewall", AclPanel),
+    ("Usuários", UsersPanel),
+    ("Vizinhos (LLDP)", LldpPanel),
+    ("Serviços", ServicesPanel),
+    ("Logs", LogsPanel),
+    ("Ferramentas", ToolsPanel),
     ("Sistema", SystemPanel),
     ("Novo Terminal", TerminalPanel),
 ]

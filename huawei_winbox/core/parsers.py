@@ -171,6 +171,176 @@ def parse_ldp_sessions(text: str) -> list[dict]:
     return rows
 
 
+def parse_arp(text: str) -> list[dict]:
+    """``display arp`` -> [{ip, mac, expire, type, interface}]"""
+    rows = []
+    pattern = re.compile(
+        r"^(\d{1,3}(?:\.\d{1,3}){3})\s+"
+        r"([0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4})\s*(.*)$"
+    )
+    for line in text.splitlines():
+        m = pattern.match(line.strip())
+        if not m:
+            continue
+        rest = m.group(3).split()
+        expire = rest[0] if rest and rest[0].isdigit() else ""
+        others = rest[1:] if expire else rest
+        rows.append({
+            "ip": m.group(1),
+            "mac": m.group(2),
+            "expire": expire,
+            "type": others[0] if others else "",
+            "interface": others[1] if len(others) > 1 else "",
+        })
+    return rows
+
+
+def parse_ip_pools(text: str) -> list[dict]:
+    """``display ip pool`` -> [{name, gateway, network, used, idle}]"""
+    rows = []
+    current: dict | None = None
+    fields = {
+        "Pool-name": "name",
+        "Gateway-0": "gateway",
+        "Network": "network",
+        "Used": "used",
+        "Idle(Expired)": "idle",
+        "Idle": "idle",
+    }
+    for line in text.splitlines():
+        m = re.match(r"^\s*([\w()-]+)\s*:\s*(\S+)", line)
+        if not m:
+            continue
+        key, value = m.group(1), m.group(2)
+        if key == "Pool-name":
+            current = {"name": value, "gateway": "", "network": "",
+                       "used": "", "idle": ""}
+            rows.append(current)
+        elif current is not None and key in fields:
+            current[fields[key]] = value
+    return rows
+
+
+def parse_nat_outbound(text: str) -> list[dict]:
+    """``display nat outbound`` -> [{interface, acl, target, type}]"""
+    rows = []
+    pattern = re.compile(rf"^({_IFACE_NAME})\s+(\d+)\s+(\S+)\s+(\S+)")
+    for line in text.splitlines():
+        m = pattern.match(line.strip())
+        if not m:
+            continue
+        rows.append({
+            "interface": m.group(1),
+            "acl": m.group(2),
+            "target": m.group(3),
+            "type": m.group(4),
+        })
+    return rows
+
+
+def parse_nat_servers(text: str) -> list[dict]:
+    """``display nat server`` -> [{interface, protocol, global, inside}]"""
+    rows = []
+    current: dict | None = None
+    for line in text.splitlines():
+        line = line.strip()
+        m = re.match(rf"^Interface\s*:\s*({_IFACE_NAME})", line)
+        if m:
+            current = {"interface": m.group(1), "protocol": "",
+                       "global": "", "inside": ""}
+            rows.append(current)
+            continue
+        if current is None:
+            continue
+        m = re.match(r"^Global\s*IP/Port\s*:\s*(\S+)", line)
+        if m:
+            current["global"] = m.group(1)
+            continue
+        m = re.match(r"^Inside\s*IP/Port\s*:\s*(\S+)", line)
+        if m:
+            current["inside"] = m.group(1)
+            continue
+        m = re.match(r"^Protocol\s*:\s*\d*\(?(\w+)\)?", line)
+        if m:
+            current["protocol"] = m.group(1)
+    return [r for r in rows if r["global"] or r["inside"]]
+
+
+def parse_acls(text: str) -> list[dict]:
+    """``display acl all`` -> [{acl, type, rule, action, detail}]"""
+    rows = []
+    acl_number = ""
+    acl_type = ""
+    for line in text.splitlines():
+        line = line.strip()
+        m = re.match(r"^(Basic|Advanced|Adv|L2)\s+ACL\s+(\d+)", line)
+        if m:
+            acl_type, acl_number = m.group(1), m.group(2)
+            continue
+        m = re.match(r"^rule\s+(\d+)\s+(permit|deny)\s*(.*?)(?:\s*\(.*\))?$",
+                     line)
+        if m and acl_number:
+            rows.append({
+                "acl": acl_number,
+                "type": acl_type,
+                "rule": m.group(1),
+                "action": m.group(2),
+                "detail": m.group(3).strip(),
+            })
+    return rows
+
+
+def parse_local_users(text: str) -> list[dict]:
+    """``display aaa local-user`` / ``display local-user`` ->
+    [{username, state, type}]"""
+    rows = []
+    for line in text.splitlines():
+        line = line.rstrip()
+        if not line or re.search(r"[Uu]sername|^-+$|^=+$|^\s*$", line):
+            continue
+        m = re.match(r"^\s*(\S+)\s+([ABab])\s+(\S+)", line)
+        if m:
+            state = {"a": "Ativo", "b": "Bloqueado"}[m.group(2).lower()]
+            rows.append({"username": m.group(1), "state": state,
+                         "type": m.group(3)})
+    return rows
+
+
+def parse_lldp_neighbors(text: str) -> list[dict]:
+    """``display lldp neighbor brief`` ->
+    [{local, neighbor_dev, neighbor_intf, exptime}]"""
+    rows = []
+    pattern = re.compile(r"^(\S+)\s+(\S+)\s+(\S+)\s+(\d+)\s*$")
+    for line in text.splitlines():
+        m = pattern.match(line.strip())
+        if not m or m.group(1).lower().startswith("local"):
+            continue
+        rows.append({
+            "local": m.group(1),
+            "neighbor_dev": m.group(2),
+            "neighbor_intf": m.group(3),
+            "exptime": m.group(4),
+        })
+    return rows
+
+
+def parse_ntp_status(text: str) -> str:
+    m = re.search(r"clock status\s*:\s*(\S+)", text, re.I)
+    return m.group(1) if m else "—"
+
+
+def parse_ssh_server_status(text: str) -> str:
+    m = re.search(r"STELNET server\s*:\s*(\S+)", text, re.I)
+    if not m:
+        m = re.search(r"Stelnet [Ss]erver\s*:\s*(\S+)", text)
+    return m.group(1) if m else "—"
+
+
+def parse_lldp_status(text: str) -> str:
+    m = re.search(r"LLDP [Ss]tatus\s*:\s*(\S+)", text)
+    return m.group(1) if m else "—"
+
+
 def parse_version(text: str) -> dict:
     """``display version`` -> {software, product, uptime}"""
     info = {"software": "", "product": "", "uptime": ""}
