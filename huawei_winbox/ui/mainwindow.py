@@ -25,6 +25,7 @@ from .panels.acl import AclPanel
 from .panels.users import UsersPanel
 from .panels.lldp import LldpPanel
 from .panels.services import ServicesPanel
+from .panels.snmp import SnmpPanel
 from .panels.logs import LogsPanel
 from .panels.tools import ToolsPanel
 from .panels.system import SystemPanel
@@ -45,6 +46,7 @@ _MENU = [
     ("Usuários", UsersPanel),
     ("Vizinhos (LLDP)", LldpPanel),
     ("Serviços", ServicesPanel),
+    ("SNMP", SnmpPanel),
     ("Logs", LogsPanel),
     ("Ferramentas", ToolsPanel),
     ("Sistema", SystemPanel),

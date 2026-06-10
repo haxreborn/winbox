@@ -277,6 +277,46 @@ def ssh_server_enable() -> list[str]:
     return ["stelnet server enable"]
 
 
+# ------------------------------ SNMP ---------------------------------- #
+def snmp_enable(version: str = "v2c") -> list[str]:
+    """Habilita o agente SNMP com a versão especificada."""
+    return [f"snmp-agent sys-info version {version}"]
+
+
+def snmp_set_contact(contact: str) -> list[str]:
+    return [f'snmp-agent sys-info contact "{contact.strip()}"']
+
+
+def snmp_set_location(location: str) -> list[str]:
+    return [f'snmp-agent sys-info location "{location.strip()}"']
+
+
+def snmp_add_community(community: str, write: bool = False,
+                       remove: bool = False) -> list[str]:
+    access = "write" if write else "read"
+    verb = "undo snmp-agent community" if remove else "snmp-agent community"
+    if remove:
+        return [f"{verb} {access} {community}"]
+    return [f"snmp-agent sys-info version v2c",
+            f"snmp-agent community {access} {community}"]
+
+
+def snmp_add_trap_host(ip: str, community: str, udp_port: int = 162,
+                       version: str = "v2c", remove: bool = False) -> list[str]:
+    if remove:
+        return [f"undo snmp-agent target-host trap address "
+                f"udp-domain {ip} udp-port {udp_port}"]
+    return [
+        "snmp-agent trap enable",
+        f"snmp-agent target-host trap address udp-domain {ip} "
+        f"udp-port {udp_port} params securityname {community} {version}",
+    ]
+
+
+def snmp_disable() -> list[str]:
+    return ["undo snmp-agent"]
+
+
 # ---------------------------- Sistema --------------------------------- #
 def set_sysname(name: str) -> list[str]:
     return [f"sysname {name.strip()}"]

@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QLabel, QSpinBox,
 )
 
+from ...core.session import _LONG_TIMEOUT
 from ..worker import run_async
 
 
@@ -27,17 +28,26 @@ class ToolsPanel(QWidget):
         self.target.setPlaceholderText("IP ou hostname (ex.: 8.8.8.8)")
         self.target.returnPressed.connect(self._ping)
         bar.addWidget(self.target, 1)
+
         bar.addWidget(QLabel("Pacotes:"))
         self.count = QSpinBox()
-        self.count.setRange(1, 100)
+        self.count.setRange(1, 50)
         self.count.setValue(5)
         bar.addWidget(self.count)
+
         self.ping_btn = QPushButton("Ping")
         self.ping_btn.clicked.connect(self._ping)
         bar.addWidget(self.ping_btn)
+
         self.trace_btn = QPushButton("Traceroute")
         self.trace_btn.clicked.connect(self._trace)
         bar.addWidget(self.trace_btn)
+
+        self.cancel_btn = QPushButton("Cancelar")
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.clicked.connect(self._cancel)
+        bar.addWidget(self.cancel_btn)
+
         root.addLayout(bar)
 
         self.output = QPlainTextEdit()
@@ -48,33 +58,43 @@ class ToolsPanel(QWidget):
             "computador.\nInforme um destino e clique em Ping ou Traceroute.")
         root.addWidget(self.output)
 
-    def _run(self, command: str):
-        target = self.target.text().strip()
-        if not target:
+    def _run_cmd(self, command: str):
+        if not self.target.text().strip():
             self.output.appendPlainText("\nInforme um destino primeiro.")
             return
         self.ping_btn.setEnabled(False)
         self.trace_btn.setEnabled(False)
-        self.output.appendPlainText(f"\n> {command}\nexecutando...")
+        self.cancel_btn.setEnabled(True)
+        self.output.appendPlainText(f"\n> {command}\n")
 
         def done(result: str):
-            self.output.appendPlainText(result)
+            txt = result.strip() or "(sem resposta do equipamento)"
+            self.output.appendPlainText(txt)
             self._unlock()
 
         def fail(message: str):
             self.output.appendPlainText(f"[erro] {message}")
             self._unlock()
 
-        run_async(self.session.run, done, fail, command)
+        # Timeout longo: traceroute com 30 saltos pode demorar ~60 s.
+        run_async(self.session.run, done, fail, command, _LONG_TIMEOUT)
 
     def _unlock(self):
         self.ping_btn.setEnabled(True)
         self.trace_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+
+    def _cancel(self):
+        self._unlock()
+        self.output.appendPlainText(
+            "[cancelado — o comando pode ainda estar rodando no equipamento]")
 
     def _ping(self):
-        target = self.target.text().strip()
-        self._run(f"ping -c {self.count.value()} {target}")
+        t = self.target.text().strip()
+        if t:
+            self._run_cmd(f"ping -c {self.count.value()} {t}")
 
     def _trace(self):
-        target = self.target.text().strip()
-        self._run(f"tracert {target}")
+        t = self.target.text().strip()
+        if t:
+            self._run_cmd(f"tracert {t}")

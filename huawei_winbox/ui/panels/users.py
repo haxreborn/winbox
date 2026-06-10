@@ -37,7 +37,9 @@ class UsersPanel(BasePanel):
             [("username", "Nome de usuário", "text", ""),
              ("password", "Senha", "text", ""),
              ("privilege", "Nível de privilégio (0-15)", "int", 15),
-             ("services", "Serviços", "choice:ssh|telnet|ssh telnet|web",
+             ("services",
+              "Serviços",
+              "choice:ssh|telnet|ssh telnet|web|terminal|ssh terminal|all",
               "ssh")],
             self)
         if values and values["username"] and values["password"]:

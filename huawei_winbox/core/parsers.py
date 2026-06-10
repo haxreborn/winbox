@@ -19,10 +19,11 @@ _IFACE_NAME = (
 
 def parse_interface_brief(text: str) -> list[dict]:
     """``display interface brief`` ->
-    [{name, phy, protocol, in_util, out_util, description}]"""
+    [{name, phy, protocol, in_util, out_util}]"""
     rows = []
     pattern = re.compile(
-        rf"^({_IFACE_NAME})\s+(\S+)\s+(\S+)(?:\s+(\S+)\s+(\S+))?(?:\s+(.*))?$"
+        rf"^({_IFACE_NAME})\s+(\*?[Uu]p|[Dd]own|\*down|\^down)\s+(\S+)"
+        r"(?:\s+([\d.]+%|-+)\s+([\d.]+%|-+))?"
     )
     for line in text.splitlines():
         m = pattern.match(line.strip())
@@ -34,9 +35,100 @@ def parse_interface_brief(text: str) -> list[dict]:
             "protocol": m.group(3),
             "in_util": m.group(4) or "",
             "out_util": m.group(5) or "",
-            "description": (m.group(6) or "").strip(),
         })
     return rows
+
+
+def parse_interface_description(text: str) -> list[dict]:
+    """``display interface description`` ->
+    [{name, phy, protocol, description}]"""
+    rows = []
+    in_data = False
+    pattern = re.compile(
+        rf"^({_IFACE_NAME})\s+(\S+)\s+(\S+)\s*(.*)?$"
+    )
+    for line in text.splitlines():
+        line_stripped = line.rstrip()
+        # Aguarda a linha de cabeçalho para começar a coleta
+        if re.search(r"\bPHY\b.*\bProtocol\b", line_stripped, re.I):
+            in_data = True
+            continue
+        if not in_data:
+            continue
+        m = pattern.match(line_stripped.strip())
+        if not m:
+            continue
+        rows.append({
+            "name": m.group(1),
+            "phy": m.group(2),
+            "protocol": m.group(3),
+            "description": (m.group(4) or "").strip(),
+        })
+    return rows
+
+
+def parse_interface_detail(text: str) -> dict:
+    """``display interface <name>`` ->
+    dict com status, velocidade, duplex, potência ótica, estatísticas."""
+    info = {
+        "state": "", "protocol": "", "description": "",
+        "speed": "", "duplex": "", "negotiation": "", "mtu": "",
+        "tx_power": "", "rx_power": "", "bias_current": "",
+        "temperature": "", "transceiver_type": "",
+        "input_rate": "", "output_rate": "",
+        "input_errors": "", "output_errors": "", "raw": text,
+    }
+    for line in text.splitlines():
+        s = line.strip()
+        m = re.match(r".+current state\s*:\s*(.+)", s, re.I)
+        if m and not info["state"]:
+            info["state"] = m.group(1).strip()
+        m = re.match(r"Line protocol current state\s*:\s*(.+)", s, re.I)
+        if m:
+            info["protocol"] = m.group(1).strip()
+        m = re.match(r"Description\s*[:\-]\s*(.+)", s, re.I)
+        if m:
+            info["description"] = m.group(1).strip()
+        m = re.match(r"Speed\s*:\s*(\d+)", s)
+        if m:
+            info["speed"] = m.group(1)
+        m = re.match(r"Duplex\s*:\s*(\S+)", s)
+        if m:
+            info["duplex"] = m.group(1)
+        m = re.match(r"Negotiation\s*:\s*(\S+)", s)
+        if m:
+            info["negotiation"] = m.group(1)
+        m = re.match(r"MTU\s+(\d+)", s)
+        if m:
+            info["mtu"] = m.group(1)
+        m = re.search(r"Port TX Power.*?:\s*(-?[\d.]+)", s)
+        if m:
+            info["tx_power"] = m.group(1) + " dBm"
+        m = re.search(r"Port RX Power.*?:\s*(-?[\d.]+)", s)
+        if m:
+            info["rx_power"] = m.group(1) + " dBm"
+        m = re.search(r"Port Bias Current.*?:\s*([\d.]+)", s)
+        if m:
+            info["bias_current"] = m.group(1) + " mA"
+        m = re.search(r"Temperature.*?:\s*(-?[\d.]+)", s)
+        if m:
+            info["temperature"] = m.group(1) + " °C"
+        m = re.match(r"Transceiver Type\s*:\s*(.+)", s)
+        if m:
+            info["transceiver_type"] = m.group(1).strip()
+        m = re.search(r"Input bandwidth utilization\s*:\s*(\S+)", s)
+        if m:
+            info["input_rate"] = m.group(1)
+        m = re.search(r"Output bandwidth utilization\s*:\s*(\S+)", s)
+        if m:
+            info["output_rate"] = m.group(1)
+        m = re.match(r"(\d+) input error", s)
+        if m:
+            info["input_errors"] = m.group(1)
+        m = re.match(r"(\d+) output error", s)
+        if m:
+            info["output_errors"] = m.group(1)
+    return info
 
 
 def parse_ip_interface_brief(text: str) -> list[dict]:
@@ -59,16 +151,58 @@ def parse_ip_interface_brief(text: str) -> list[dict]:
 
 
 def parse_vlans(text: str) -> list[dict]:
-    """``display vlan`` -> [{id, type, description}] (formato resumido)."""
-    rows = []
+    """``display vlan`` -> [{id, type, description}].
+
+    O VRP exibe duas tabelas: a primeira com ID/Tipo/Portas e a segunda
+    (opcional) com ID/Status/.../Descrição. Mescla as duas.
+    """
+    # 1ª tabela: VID  Type  Ports
+    first: dict[str, str] = {}
+    in_first = False
     for line in text.splitlines():
-        m = re.match(r"^(\d{1,4})\s+(\S+)\s*(.*)$", line.strip())
+        s = line.strip()
+        if re.match(r"^VID\s+Type\s+Ports", s, re.I):
+            in_first = True
+            continue
+        if not in_first:
+            continue
+        # A segunda tabela começa com "VID  Status  Property"
+        if re.match(r"^VID\s+Status\s+Property", s, re.I):
+            break
+        m = re.match(r"^(\d{1,4})\s+(\S+)", s)
         if m and 1 <= int(m.group(1)) <= 4094:
-            rows.append({
-                "id": m.group(1),
-                "type": m.group(2),
-                "description": m.group(3).strip(),
-            })
+            first[m.group(1)] = m.group(2)
+
+    # 2ª tabela: VID  Status  Property  MAC-LRN  Statistics  Description
+    desc: dict[str, str] = {}
+    in_second = False
+    for line in text.splitlines():
+        s = line.strip()
+        if re.match(r"^VID\s+Status\s+Property", s, re.I):
+            in_second = True
+            continue
+        if not in_second:
+            continue
+        # 6 campos: id status property mac-lrn stats description(pode ser vazio)
+        m = re.match(
+            r"^(\d{1,4})\s+\S+\s+\S+\s+\S+\s+\S+\s*(.*)?$", s)
+        if m and 1 <= int(m.group(1)) <= 4094:
+            raw = (m.group(2) or "").strip()
+            desc[m.group(1)] = "" if raw == "-" else raw
+
+    if not first:
+        # Fallback: formato simples "VID  Type"
+        for line in text.splitlines():
+            m = re.match(r"^(\d{1,4})\s+(\S+)\s*(.*)$", line.strip())
+            if m and 1 <= int(m.group(1)) <= 4094:
+                first[m.group(1)] = m.group(2)
+                if m.group(3).strip() and m.group(3).strip() != "-":
+                    desc[m.group(1)] = m.group(3).strip()
+
+    rows = []
+    for vid, vtype in first.items():
+        rows.append({"id": vid, "type": vtype,
+                     "description": desc.get(vid, "")})
     return rows
 
 
@@ -366,3 +500,67 @@ def parse_memory_usage(text: str) -> str:
     if not m:
         m = re.search(r"[Mm]emory [Uu]tilization\s*:?\s*(\d+)\s*%", text)
     return f"{m.group(1)}%" if m else "—"
+
+
+# ------------------------------------------------------------------ SNMP #
+def parse_snmp_communities(text: str) -> list[dict]:
+    """``display snmp-agent community`` -> [{name, access}]"""
+    rows = []
+    for line in text.splitlines():
+        s = line.strip()
+        m = re.match(r"Community name\s*:\s*(\S+)", s, re.I)
+        if m:
+            current = {"name": m.group(1), "access": "read"}
+            rows.append(current)
+            continue
+        if rows:
+            m = re.match(r"Community access\s*:\s*(\S+)", s, re.I)
+            if m:
+                rows[-1]["access"] = m.group(1).lower()
+    # Fallback: formato simples "read-community: name"
+    if not rows:
+        for line in text.splitlines():
+            s = line.strip()
+            m = re.match(r"(read|write)\s*[:\-]\s*(\S+)", s, re.I)
+            if m:
+                rows.append({"name": m.group(2), "access": m.group(1).lower()})
+    return rows
+
+
+def parse_snmp_sys_info(text: str) -> dict:
+    """``display snmp-agent sys-info`` -> {version, contact, location}"""
+    info = {"version": "—", "contact": "—", "location": "—"}
+    for line in text.splitlines():
+        s = line.strip()
+        m = re.match(r"SNMP version\s*:\s*(.+)", s, re.I)
+        if m:
+            info["version"] = m.group(1).strip()
+        m = re.match(r"SysContact\s*:\s*(.+)", s, re.I)
+        if m:
+            info["contact"] = m.group(1).strip()
+        m = re.match(r"SysLocation\s*:\s*(.+)", s, re.I)
+        if m:
+            info["location"] = m.group(1).strip()
+    return info
+
+
+def parse_snmp_trap_hosts(text: str) -> list[dict]:
+    """``display snmp-agent target-host`` -> [{address, community, version}]"""
+    rows = []
+    current: dict | None = None
+    for line in text.splitlines():
+        s = line.strip()
+        m = re.match(r"Target address\s*:\s*(\S+)", s, re.I)
+        if m:
+            current = {"address": m.group(1), "community": "", "version": ""}
+            rows.append(current)
+            continue
+        if current is None:
+            continue
+        m = re.match(r"Security name\s*:\s*(\S+)", s, re.I)
+        if m:
+            current["community"] = m.group(1)
+        m = re.match(r"Security model\s*:\s*(\S+)", s, re.I)
+        if m:
+            current["version"] = m.group(1)
+    return rows

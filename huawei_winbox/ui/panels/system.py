@@ -22,11 +22,25 @@ class SystemPanel(BasePanel):
         layout.addWidget(save_btn)
 
     def fetch(self):
-        version = parsers.parse_version(self.session.run("display version"))
-        cpu = parsers.parse_cpu_usage(self.session.run("display cpu-usage"))
-        mem = parsers.parse_memory_usage(self.session.run("display memory-usage"))
+        version_text = self.session.run("display version")
+        cpu_text = self.session.run("display cpu-usage")
+        mem_text = self.session.run("display memory-usage")
+        # Lê o sysname diretamente do equipamento
+        sysname_text = self.session.run("display sysname")
+        sysname = ""
+        import re as _re
+        m = _re.search(r"[Ss]ysname\s+(?:is\s+)?(\S+)", sysname_text)
+        if m:
+            sysname = m.group(1)
+            self.session.hostname = sysname   # mantém sincronizado
+        if not sysname:
+            sysname = self.session.hostname
+
+        version = parsers.parse_version(version_text)
+        cpu = parsers.parse_cpu_usage(cpu_text)
+        mem = parsers.parse_memory_usage(mem_text)
         return [
-            {"item": "Nome do equipamento", "valor": self.session.hostname},
+            {"item": "Nome do equipamento (sysname)", "valor": sysname},
             {"item": "Produto", "valor": version["product"] or "—"},
             {"item": "Software (VRP)", "valor": version["software"] or "—"},
             {"item": "Tempo ligado", "valor": version["uptime"] or "—"},

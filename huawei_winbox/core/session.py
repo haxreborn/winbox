@@ -14,10 +14,15 @@ import threading
 import paramiko
 
 # Prompt do VRP: <HUAWEI>, [HUAWEI], [HUAWEI-GigabitEthernet0/0/1] etc.
-_PROMPT_RE = re.compile(r"[<\[][^<>\[\]\r\n]{1,80}[>\]]\s*$")
+_PROMPT_RE = re.compile(r"[<\[]\S[^<>\[\]\r\n]{0,79}[>\]]\s*$")
 # Paginação ("---- More ----") caso screen-length não tenha sido aplicado.
 _MORE_RE = re.compile(r"-+\s*[Mm]ore\s*-+")
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\[16D\s*\x1b\[16D")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\r|\x1b\[16D\s*\x1b\[16D")
+# Extrai o nome do equipamento do prompt detectado.
+_HOSTNAME_RE = re.compile(r"[<\[]([^<>\[\]\r\n]+)[>\]]")
+
+# Comandos que podem demorar bem mais que o timeout padrão.
+_LONG_TIMEOUT = 90.0   # ping, traceroute, logbuffer extenso
 
 
 class SSHError(Exception):
@@ -28,7 +33,7 @@ class HuaweiSession:
     """Conexão SSH persistente com um equipamento Huawei VRP."""
 
     def __init__(self, host: str, username: str, password: str,
-                 port: int = 22, timeout: float = 12.0):
+                 port: int = 22, timeout: float = 15.0):
         self.host = host
         self.port = port
         self.username = username
@@ -56,18 +61,17 @@ class HuaweiSession:
         except paramiko.AuthenticationException as exc:
             raise SSHError("Falha de autenticação: usuário ou senha inválidos.") from exc
         except (paramiko.SSHException, socket.error) as exc:
-            raise SSHError(f"Não foi possível conectar a {self.host}:{self.port} — {exc}") from exc
+            raise SSHError(
+                f"Não foi possível conectar a {self.host}:{self.port} — {exc}") from exc
 
         shell = client.invoke_shell(width=512, height=64)
-        shell.settimeout(self.timeout)
+        shell.settimeout(0.5)          # timeout de recv individual (não total)
         self._client = client
         self._shell = shell
-        # Lê banner/prompt inicial e desativa paginação na sessão.
+        # Lê banner/prompt inicial — hostname é extraído aqui.
         self._read_until_prompt()
-        out = self.run("screen-length 0 temporary")
-        m = re.search(r"<([^<>\r\n]+)>\s*$", out) or re.search(r"<([^<>\r\n]+)>", out)
-        if m:
-            self.hostname = m.group(1)
+        # Desativa paginação nesta sessão.
+        self.run("screen-length 0 temporary")
 
     @property
     def connected(self) -> bool:
@@ -84,13 +88,17 @@ class HuaweiSession:
             self._client = None
 
     # ------------------------------------------------------------------ #
-    def run(self, command: str) -> str:
-        """Envia um comando e retorna a saída (sem o eco e sem o prompt)."""
+    def run(self, command: str, timeout: float | None = None) -> str:
+        """Envia um comando e retorna a saída (sem o eco nem o prompt).
+
+        Use ``timeout`` para comandos lentos (ping, traceroute, logbuffer).
+        """
+        t = timeout or self.timeout
         with self._lock:
             if not self.connected:
                 raise SSHError("Sessão SSH não está conectada.")
             self._shell.send(command + "\n")
-            raw = self._read_until_prompt()
+            raw = self._read_until_prompt(t)
         return self._clean(raw, command)
 
     def run_many(self, commands: list[str]) -> str:
@@ -106,31 +114,59 @@ class HuaweiSession:
         return self.run_many(seq)
 
     # ------------------------------------------------------------------ #
-    def _read_until_prompt(self) -> str:
+    def _read_until_prompt(self, timeout: float | None = None) -> str:
+        """Lê do shell até encontrar um prompt do VRP.
+
+        Extrai o hostname do prompt encontrado (self.hostname é atualizado
+        a cada resposta), lida com paginação "---- More ----" e respeita o
+        timeout informado.
+        """
+        t = timeout or self.timeout
         buf = ""
-        deadline = time.time() + self.timeout
+        deadline = time.time() + t
         while time.time() < deadline:
-            if self._shell.recv_ready():
-                chunk = self._shell.recv(65535).decode("utf-8", errors="replace")
-                buf += chunk
-                deadline = time.time() + self.timeout
-                tail = _ANSI_RE.sub("", buf).rstrip()
-                if _MORE_RE.search(tail.splitlines()[-1] if tail else ""):
-                    self._shell.send(" ")
-                    continue
-                if _PROMPT_RE.search(tail):
-                    return buf
-            else:
+            try:
+                chunk = self._shell.recv(65535)
+            except socket.timeout:
+                chunk = b""
+            if chunk:
+                buf += chunk.decode("utf-8", errors="replace")
+                deadline = time.time() + t   # recebeu dados → reseta prazo
+
+            # Trabalha sobre a versão sem ANSI para detecção de padrões.
+            tail = _ANSI_RE.sub("", buf).rstrip()
+            lines = tail.splitlines() if tail else [""]
+            last = lines[-1]
+
+            if _MORE_RE.search(last):
+                self._shell.send(" ")
                 time.sleep(0.05)
-        raise SSHError("Tempo esgotado aguardando resposta do equipamento.")
+                continue
+
+            if _PROMPT_RE.search(tail):
+                # Extrai o hostname do último prompt visível.
+                m = _HOSTNAME_RE.search(last)
+                if m:
+                    raw_name = m.group(1).strip()
+                    # Remove sufixo de sub-view: [AR-GigabitEthernet0/0/1] → AR
+                    self.hostname = raw_name.split("-")[0] if "-" in raw_name \
+                        else raw_name
+                return buf
+
+            time.sleep(0.02)
+
+        raise SSHError(
+            f"Tempo esgotado ({t:.0f}s) aguardando resposta do equipamento. "
+            "Verifique a conectividade e tente novamente.")
 
     @staticmethod
     def _clean(raw: str, command: str) -> str:
-        text = _ANSI_RE.sub("", raw).replace("\r", "")
+        text = _ANSI_RE.sub("", raw).replace("\r\n", "\n").replace("\r", "\n")
         lines = text.split("\n")
-        # Remove eco do comando e linha final de prompt.
+        # Remove eco do comando (primeira linha que contém o comando).
         if lines and command.strip() in lines[0]:
             lines = lines[1:]
+        # Remove linhas finais que são apenas prompt.
         while lines and _PROMPT_RE.search(lines[-1].strip()):
             lines = lines[:-1]
         # Remove "More" residual.
