@@ -25,7 +25,7 @@ class SimpleForm(QDialog):
         for key, label, kind, default in fields:
             if kind == "int":
                 w = QSpinBox()
-                w.setRange(0, 4294967295 if key.endswith("_as") else 1000000)
+                w.setRange(0, 2147483647 if key.endswith("_as") else 1000000)
                 w.setValue(int(default or 0))
             elif kind.startswith("choice:"):
                 w = QComboBox()
