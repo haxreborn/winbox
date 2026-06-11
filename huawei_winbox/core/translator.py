@@ -330,5 +330,6 @@ def set_sysname(name: str) -> list[str]:
 
 
 def save_config() -> list[str]:
-    # Fora da visão de sistema; o "y" confirma a gravação.
-    return ["save", "y"]
+    # A confirmação "[Y/N]" da gravação é respondida automaticamente
+    # pela sessão (_CONFIRM_RE em session.py).
+    return ["save"]

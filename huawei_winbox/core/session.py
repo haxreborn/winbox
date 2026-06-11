@@ -17,6 +17,11 @@ import paramiko
 _PROMPT_RE = re.compile(r"[<\[]\S[^<>\[\]\r\n]{0,79}[>\]]\s*$")
 # Paginação ("---- More ----") caso screen-length não tenha sido aplicado.
 _MORE_RE = re.compile(r"-+\s*[Mm]ore\s*-+")
+# Pergunta de confirmação do VRP ("Continue? [Y/N]:") — respondida com "y"
+# automaticamente; sem isso, comandos como "peer X ignore" ou "save"
+# ficariam parados até estourar o timeout.
+_CONFIRM_RE = re.compile(r"\[\s*Y\s*/\s*N\s*\]\s*:?\s*$|\(y/n\)\s*:?\s*$",
+                         re.IGNORECASE)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\r|\x1b\[16D\s*\x1b\[16D")
 # Extrai o nome do equipamento do prompt detectado (captura o colchete
 # para distinguir visão de usuário <name> de visão de sistema [name-...]).
@@ -180,6 +185,11 @@ class HuaweiSession:
 
             if _MORE_RE.search(last):
                 self._shell.send(" ")
+                time.sleep(0.05)
+                continue
+
+            if chunk and _CONFIRM_RE.search(last):
+                self._shell.send("y\n")
                 time.sleep(0.05)
                 continue
 

@@ -319,19 +319,33 @@ def parse_routing_table(text: str) -> list[dict]:
 
 
 def parse_bgp_peers(text: str) -> list[dict]:
-    """``display bgp peer`` -> [{peer, version, as, msgrcvd, msgsent,
-    up_down, state, prefrcv}]"""
+    """``display bgp peer`` / ``display bgp ipv6 peer`` ->
+    [{peer, version, as, msgrcvd, msgsent, up_down, state, prefrcv, family}]
+
+    Aceita vizinhos IPv4 e IPv6. Endereços IPv6 longos fazem o VRP quebrar
+    a linha (endereço sozinho, demais colunas na linha seguinte) — essas
+    linhas são reunidas antes do parse. A família é deduzida do próprio
+    endereço (':' = IPv6), e não do comando que gerou a saída.
+    """
     rows = []
     pattern = re.compile(
-        r"^(\d{1,3}(?:\.\d{1,3}){3})\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+"
-        r"(\S+)\s+(\S+)\s+(\S+)\s*(\d+)?"
+        r"^(\d{1,3}(?:\.\d{1,3}){3}|[0-9A-Fa-f]*:[0-9A-Fa-f:.]+)\s+"
+        r"(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s*(\d+)?"
     )
-    for line in text.splitlines():
-        m = pattern.match(line.strip())
+    pending = ""
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        line = f"{pending} {stripped}" if pending else stripped
+        pending = ""
+        m = pattern.match(line)
         if not m:
+            # Endereço IPv6 sozinho na linha => colunas vêm na próxima.
+            if ":" in stripped and re.fullmatch(r"[0-9A-Fa-f:.]+", stripped):
+                pending = stripped
             continue
+        peer = m.group(1)
         rows.append({
-            "peer": m.group(1),
+            "peer": peer,
             "version": m.group(2),
             "as": m.group(3),
             "msgrcvd": m.group(4),
@@ -339,6 +353,7 @@ def parse_bgp_peers(text: str) -> list[dict]:
             "up_down": m.group(7),
             "state": m.group(8),
             "prefrcv": m.group(9) or "",
+            "family": "IPv6" if ":" in peer else "IPv4",
         })
     return rows
 

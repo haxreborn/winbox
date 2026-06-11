@@ -19,17 +19,19 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QPlainTextEdit
 
 from ..worker import run_async
 
-# Remove sequências ANSI problemáticas e paginação "---- More ----".
-# \x08 \x08 (BS+space+BS): sequência padrão VTY para apagar um caractere —
-# tratada antes do \x08+ para não deixar o espaço sobrando na tela.
+# Remove sequências ANSI problemáticas. Backspaces (\x08) NÃO são
+# removidos aqui: são aplicados um a um em _append (cada \x08 apaga o
+# caractere anterior na tela), porque o eco "\x08 \x08" do equipamento
+# pode chegar dividido entre dois recv() — regex sobre o chunk não trata.
+# Assim "---- More ----" e a linha digitada também são apagados
+# naturalmente quando o VRP os apaga com BS+espaço+BS.
+# O padrão \x1b[ND ... \x1b[ND (apaga linha via cursor) precisa vir ANTES
+# do CSI genérico, senão o CSI consome o \x1b[ND e deixa os espaços.
 _STRIP = re.compile(
-    r"\x1b\[[0-9;]*[A-Za-z]"          # CSI sequences (cores, cursor)
+    r"\x1b\[\d+D\s*\x1b\[\d+D"         # VRP: apaga linha (left+spaces+left)
+    r"|\x1b\[[0-9;]*[A-Za-z]"          # CSI sequences (cores, cursor)
     r"|\x1b\][^\x07]*\x07"             # OSC sequences (título)
     r"|\x1b[>=]"                        # DECPNM / DECPAM
-    r"|\x1b\[16D\s*\x1b\[16D"          # VRP backspace-erase pattern
-    r"|\x08[ ]?\x08"                    # BS+[space]+BS — eco de apagar caractere
-    r"|\x08+"                           # backspaces avulsos restantes
-    r"|[ \t]*----[ \t]*[Mm]ore[ \t]*----[ \t]*\x08*[ \t]*"  # ---- More ----
 )
 
 
@@ -90,16 +92,14 @@ class _TerminalView(QPlainTextEdit):
             return
 
         # ── Backspace ───────────────────────────────────────────────────
-        # Apaga localmente na hora (sem esperar o eco do equipamento).
-        # O dispositivo responde com \x08 \x08 — o _STRIP absorve esse eco
-        # para não re-apagar nem deixar espaços sobrando na tela.
+        # Envia só o \x08; o equipamento ecoa "\x08 \x08" e o _append
+        # aplica cada \x08 apagando o caractere na tela (BS apaga o char
+        # digitado, o espaço entra e o BS seguinte apaga o espaço). Isso
+        # funciona para qualquer quantidade de backspaces seguidos, mesmo
+        # com o eco chegando dividido entre dois recv().
         if key == Qt.Key.Key_Backspace:
             if self._typed:
                 self._typed = self._typed[:-1]
-                cursor = self.textCursor()
-                cursor.movePosition(cursor.MoveOperation.End)
-                cursor.deletePreviousChar()
-                self.setTextCursor(cursor)
                 self._send("\x08")
             return
 
@@ -251,8 +251,19 @@ class TerminalPanel(QWidget):
             self._append(text)
 
     def _append(self, text: str) -> None:
+        """Insere texto no fim, aplicando cada \\x08 como "apaga anterior".
+
+        O eco de apagar do VRP é "\\x08 \\x08" (volta, espaço, volta): o
+        primeiro BS apaga o caractere digitado, o espaço entra na tela e o
+        segundo BS apaga o espaço — resultado visual idêntico ao PuTTY,
+        mesmo quando a sequência chega dividida entre dois recv().
+        """
         cursor = self.output.textCursor()
         cursor.movePosition(cursor.MoveOperation.End)
-        cursor.insertText(text)
+        parts = text.split("\x08")
+        cursor.insertText(parts[0])
+        for part in parts[1:]:
+            cursor.deletePreviousChar()
+            cursor.insertText(part)
         self.output.setTextCursor(cursor)
         self.output.ensureCursorVisible()

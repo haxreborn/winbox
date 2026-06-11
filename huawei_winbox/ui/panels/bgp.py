@@ -36,17 +36,20 @@ class BgpPanel(BasePanel):
         layout.addWidget(del_btn)
 
     def fetch(self):
-        # IPv4 peers
+        # Família IPv4 — a família de cada linha vem do próprio endereço
+        # do peer (parse_bgp_peers), nunca do comando que gerou a saída.
         text4 = self.session.run("display bgp peer")
         info = parsers.parse_bgp_local(text4)
         self.local_as = int(info["local_as"] or 0)
-        rows = [dict(r, family="IPv4") for r in parsers.parse_bgp_peers(text4)]
+        rows = parsers.parse_bgp_peers(text4)
+        seen = {r["peer"] for r in rows}
 
-        # IPv6 peers (comando separado; falha silenciosa se não configurado)
+        # Família IPv6 (comando separado; falha silenciosa se não configurado).
+        # Peers que já apareceram no comando IPv4 não são duplicados.
         try:
             text6 = self.session.run("display bgp ipv6 peer")
-            rows += [dict(r, family="IPv6") for r in parsers.parse_bgp_peers(text6)]
-            # Extrai local_as do IPv6 se ainda não temos
+            rows += [r for r in parsers.parse_bgp_peers(text6)
+                     if r["peer"] not in seen]
             if not self.local_as:
                 info6 = parsers.parse_bgp_local(text6)
                 self.local_as = int(info6["local_as"] or 0)
