@@ -20,12 +20,15 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QPlainTextEdit
 from ..worker import run_async
 
 # Remove sequências ANSI problemáticas e paginação "---- More ----".
+# \x08 \x08 (BS+space+BS): sequência padrão VTY para apagar um caractere —
+# tratada antes do \x08+ para não deixar o espaço sobrando na tela.
 _STRIP = re.compile(
     r"\x1b\[[0-9;]*[A-Za-z]"          # CSI sequences (cores, cursor)
     r"|\x1b\][^\x07]*\x07"             # OSC sequences (título)
     r"|\x1b[>=]"                        # DECPNM / DECPAM
     r"|\x1b\[16D\s*\x1b\[16D"          # VRP backspace-erase pattern
-    r"|\x08+"                           # bare backspaces
+    r"|\x08[ ]?\x08"                    # BS+[space]+BS — eco de apagar caractere
+    r"|\x08+"                           # backspaces avulsos restantes
     r"|[ \t]*----[ \t]*[Mm]ore[ \t]*----[ \t]*\x08*[ \t]*"  # ---- More ----
 )
 
@@ -87,10 +90,17 @@ class _TerminalView(QPlainTextEdit):
             return
 
         # ── Backspace ───────────────────────────────────────────────────
+        # Apaga localmente na hora (sem esperar o eco do equipamento).
+        # O dispositivo responde com \x08 \x08 — o _STRIP absorve esse eco
+        # para não re-apagar nem deixar espaços sobrando na tela.
         if key == Qt.Key.Key_Backspace:
             if self._typed:
                 self._typed = self._typed[:-1]
-            self._send("\x08")
+                cursor = self.textCursor()
+                cursor.movePosition(cursor.MoveOperation.End)
+                cursor.deletePreviousChar()
+                self.setTextCursor(cursor)
+                self._send("\x08")
             return
 
         # ── ↑ histórico ─────────────────────────────────────────────────
