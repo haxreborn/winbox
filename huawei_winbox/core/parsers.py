@@ -44,8 +44,9 @@ def parse_interface_description(text: str) -> list[dict]:
     [{name, phy, protocol, description}]"""
     rows = []
     in_data = False
+    # (?:\(\w+\))? absorve anotações de velocidade: 100GE0/3/0(40G), GE0/3/5(10G)
     pattern = re.compile(
-        rf"^({_IFACE_NAME})\s+(\S+)\s+(\S+)\s*(.*)?$"
+        rf"^({_IFACE_NAME})(?:\(\w+\))?\s+(\S+)\s+(\S+)\s*(.*)?$"
     )
     for line in text.splitlines():
         line_stripped = line.rstrip()
@@ -143,6 +144,22 @@ _IFACE_ABBREV = {
 }
 
 
+def is_physical_iface(name: str) -> bool:
+    """Retorna True apenas para interfaces físicas que podem ter transceptor.
+
+    Sub-interfaces (100GE0/3/0.370), Vlanif, LoopBack, NULL, VE, Eth-Trunk
+    não têm SFP — não adianta tentar display transceiver nelas.
+    """
+    # Sub-interface: tem ponto no número da porta (0/3/0.370)
+    if re.search(r"\.\d+$", name):
+        return False
+    lower = name.lower()
+    for prefix in ("vlan", "loop", "null", "ve", "eth-trunk", "meth"):
+        if lower.startswith(prefix):
+            return False
+    return True
+
+
 def transceiver_iface_arg(name: str) -> str:
     """Converte o nome da interface para a forma exigida por
     ``display transceiver interface``.
@@ -196,9 +213,10 @@ def merge_transceiver_detail(info: dict, text: str) -> dict:
         m = re.match(r"TX Power\(dBM\)\s*:\s*(-?[\d.]+)", s, re.I)
         if m:
             info["tx_power"] = m.group(1) + " dBm"
-    if text.strip():
+    # Só anexa ao raw se a saída contiver dados reais (não erros do VRP).
+    if text.strip() and "Error" not in text and "Wrong" not in text:
         info["raw"] = (info.get("raw", "") +
-                       "\n\n===== display transceiver verbose =====\n" + text)
+                       "\n\n--- transceiver ---\n" + text)
     return info
 
 

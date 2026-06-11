@@ -216,17 +216,18 @@ class InterfacesPanel(BasePanel):
             except Exception as exc:
                 text = f"[Erro ao consultar interface: {exc}]"
             info = parsers.parse_interface_detail(text)
-            # Potência ótica: em switches S-series ela só aparece em
-            # "display transceiver interface <nome> verbose" — o
-            # display interface não traz TX/RX power nesses modelos.
-            try:
-                iface_arg = parsers.transceiver_iface_arg(row["name"])
-                tr_text = self.session.run(
-                    f"display transceiver interface {iface_arg} verbose",
-                    timeout=10.0)
-            except Exception:
-                tr_text = ""
-            parsers.merge_transceiver_detail(info, tr_text)
+            # Potência ótica via display transceiver — só faz sentido em
+            # interfaces físicas reais (não subinterfaces .X, não Vlanif,
+            # não LoopBack, NULL, VE, Eth-Trunk etc.).
+            if parsers.is_physical_iface(row["name"]):
+                try:
+                    iface_arg = parsers.transceiver_iface_arg(row["name"])
+                    tr_text = self.session.run(
+                        f"display transceiver interface {iface_arg} verbose",
+                        timeout=10.0)
+                except Exception:
+                    tr_text = ""
+                parsers.merge_transceiver_detail(info, tr_text)
             return info
 
         def done(info: dict):

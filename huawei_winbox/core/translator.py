@@ -105,6 +105,13 @@ def bgp_peer(local_as: int, peer_ip: str, remote_as: int,
     return cmds
 
 
+def bgp_peer_ignore(local_as: int, peer_ip: str,
+                    ignore: bool = True) -> list[str]:
+    """Habilita ou desabilita (ignore) um peer BGP sem removê-lo."""
+    verb = "" if ignore else "undo "
+    return [f"bgp {local_as}", f"{verb}peer {peer_ip} ignore", "quit"]
+
+
 def bgp_network(local_as: int, network: str, mask: str,
                 remove: bool = False) -> list[str]:
     verb = "undo network" if remove else "network"

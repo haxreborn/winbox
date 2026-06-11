@@ -1,8 +1,9 @@
-"""Painel BGP — vizinhos, anúncio de redes e configuração do processo."""
+"""Painel BGP — vizinhos IPv4 e IPv6, anúncio de redes e configuração."""
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QPushButton, QMessageBox
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QPushButton, QMessageBox, QTableWidgetItem
 
 from ...core import parsers, translator
 from ..forms import SimpleForm
@@ -11,7 +12,7 @@ from .base import BasePanel
 
 class BgpPanel(BasePanel):
     title = "BGP"
-    columns = ["Vizinho", "AS remoto", "Msg Rx", "Msg Tx",
+    columns = ["Vizinho", "AS remoto", "Família",
                "Up/Down", "Estado", "Prefixos"]
 
     def __init__(self, session, parent=None):
@@ -23,6 +24,8 @@ class BgpPanel(BasePanel):
             ("Habilitar BGP...", self._enable_bgp),
             ("Novo vizinho...", self._add_peer),
             ("Anunciar rede...", self._add_network),
+            ("Desabilitar peer", self._disable_peer),
+            ("Habilitar peer", self._enable_peer),
         ]:
             btn = QPushButton(text)
             btn.clicked.connect(slot)
@@ -33,18 +36,57 @@ class BgpPanel(BasePanel):
         layout.addWidget(del_btn)
 
     def fetch(self):
-        text = self.session.run("display bgp peer")
-        info = parsers.parse_bgp_local(text)
+        # IPv4 peers
+        text4 = self.session.run("display bgp peer")
+        info = parsers.parse_bgp_local(text4)
         self.local_as = int(info["local_as"] or 0)
-        return parsers.parse_bgp_peers(text)
+        rows = [dict(r, family="IPv4") for r in parsers.parse_bgp_peers(text4)]
+
+        # IPv6 peers (comando separado; falha silenciosa se não configurado)
+        try:
+            text6 = self.session.run("display bgp ipv6 peer")
+            rows += [dict(r, family="IPv6") for r in parsers.parse_bgp_peers(text6)]
+            # Extrai local_as do IPv6 se ainda não temos
+            if not self.local_as:
+                info6 = parsers.parse_bgp_local(text6)
+                self.local_as = int(info6["local_as"] or 0)
+        except Exception:
+            pass
+
+        return rows
 
     def _on_rows(self, rows):
-        super()._on_rows(rows)
+        self._rows = rows
+        self.table.setRowCount(0)
+        for row in rows:
+            r = self.table.rowCount()
+            self.table.insertRow(r)
+            for c, value in enumerate(self.row_values(row)):
+                item = QTableWidgetItem(str(value))
+                item.setData(Qt.UserRole, row)
+                # Ignora (disabled) peers em cinza
+                if row.get("state", "").lower() in ("idle", "idle(admin)"):
+                    for col in range(self.table.columnCount()):
+                        pass  # colored below
+                self.table.setItem(r, c, item)
+            # Cor por estado
+            state = row.get("state", "").lower()
+            if "established" in state:
+                color = Qt.darkGreen
+            elif "idle" in state or "active" in state:
+                color = Qt.darkGray
+            else:
+                color = Qt.darkYellow
+            for c in range(self.table.columnCount()):
+                item = self.table.item(r, c)
+                if item:
+                    item.setForeground(color)
+
         suffix = f" — AS local {self.local_as}" if self.local_as else ""
-        self.status_label.setText(self.status_label.text() + suffix)
+        self._set_busy(False, f"{len(rows)} vizinho(s){suffix}")
 
     def row_values(self, row):
-        return [row["peer"], row["as"], row["msgrcvd"], row["msgsent"],
+        return [row["peer"], row["as"], row.get("family", "IPv4"),
                 row["up_down"], row["state"], row["prefrcv"]]
 
     # ----------------------------------------------------------------- #
@@ -93,6 +135,28 @@ class BgpPanel(BasePanel):
         if local_as:
             self.apply_commands(translator.bgp_peer(
                 local_as, row["peer"], 0, remove=True))
+
+    def _disable_peer(self):
+        """Desabilita (ignore) o peer sem removê-lo."""
+        row = self.selected_row()
+        if not row:
+            QMessageBox.information(self, self.title, "Selecione um vizinho.")
+            return
+        local_as = self._require_as()
+        if local_as:
+            self.apply_commands(translator.bgp_peer_ignore(
+                local_as, row["peer"], ignore=True))
+
+    def _enable_peer(self):
+        """Reabilita um peer que estava com ignore."""
+        row = self.selected_row()
+        if not row:
+            QMessageBox.information(self, self.title, "Selecione um vizinho.")
+            return
+        local_as = self._require_as()
+        if local_as:
+            self.apply_commands(translator.bgp_peer_ignore(
+                local_as, row["peer"], ignore=False))
 
     def _add_network(self):
         values = SimpleForm.ask(
