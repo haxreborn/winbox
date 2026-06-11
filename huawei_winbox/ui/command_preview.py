@@ -17,7 +17,8 @@ class CommandPreviewDialog(QDialog):
     """Mostra os comandos e pergunta se devem ser enviados via SSH."""
 
     def __init__(self, commands: list[str], parent=None,
-                 title: str = "Pré-visualização dos comandos"):
+                 title: str = "Pré-visualização dos comandos",
+                 two_stage: bool = False, system_view: bool = True):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.resize(520, 320)
@@ -29,9 +30,17 @@ class CommandPreviewDialog(QDialog):
             "Revise e confirme para enviá-los ao equipamento via SSH:"
         ))
 
+        # Mostra EXATAMENTE o que será enviado: comandos de visão de
+        # usuário (ex.: save) não ganham o invólucro system-view/return.
+        # NE/ATN (dois estágios): o commit que será enviado aparece aqui.
+        if system_view:
+            tail = ["commit", "return"] if two_stage else ["return"]
+            shown = ["system-view", *commands, *tail]
+        else:
+            shown = list(commands)
         self.editor = QPlainTextEdit()
         self.editor.setObjectName("cliPreview")
-        self.editor.setPlainText("\n".join(["system-view", *commands, "return"]))
+        self.editor.setPlainText("\n".join(shown))
         self.editor.setReadOnly(True)
         layout.addWidget(self.editor)
 
@@ -53,7 +62,10 @@ class CommandPreviewDialog(QDialog):
         QApplication.clipboard().setText(self.editor.toPlainText())
 
     @staticmethod
-    def confirm(commands: list[str], parent=None) -> bool:
+    def confirm(commands: list[str], parent=None,
+                two_stage: bool = False, system_view: bool = True) -> bool:
         """Atalho: abre o diálogo e retorna True se o usuário confirmar."""
-        dialog = CommandPreviewDialog(commands, parent)
+        dialog = CommandPreviewDialog(commands, parent,
+                                      two_stage=two_stage,
+                                      system_view=system_view)
         return dialog.exec() == QDialog.Accepted

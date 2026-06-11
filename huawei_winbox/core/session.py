@@ -49,6 +49,10 @@ class HuaweiSession:
         self._shell: paramiko.Channel | None = None
         self._lock = threading.Lock()
         self.hostname = host
+        # NE/ATN (VRP em dois estágios): o prompt de configuração vem como
+        # [~name] (sincronizado) ou [*name] (alterações pendentes). Quando
+        # detectado, configure() envia "commit" antes de sair.
+        self.two_stage = False
 
     # ------------------------------------------------------------------ #
     def connect(self) -> None:
@@ -78,6 +82,14 @@ class HuaweiSession:
         self._read_until_prompt()
         # Desativa paginação nesta sessão.
         self.run("screen-length 0 temporary")
+        # Detecta configuração em dois estágios (NE/ATN): entra e sai da
+        # visão de sistema só para observar o prompt — [~name] marca
+        # two_stage e faz configure() usar commit. Não altera nada.
+        try:
+            self.run("system-view")
+            self.run("return")
+        except SSHError:
+            pass
 
     @property
     def connected(self) -> bool:
@@ -150,13 +162,26 @@ class HuaweiSession:
         """Envia uma sequência de comandos (ex.: bloco de configuração)."""
         outputs = []
         for cmd in commands:
-            outputs.append(f"> {cmd}\n{self.run(cmd)}")
+            try:
+                out = self.run(cmd)
+            except SSHError as exc:
+                raise SSHError(
+                    f"Falha ao executar '{cmd}':\n{exc}") from exc
+            outputs.append(f"> {cmd}\n{out}")
         return "\n".join(outputs)
 
     def configure(self, commands: list[str]) -> str:
-        """Entra na visão de sistema, aplica os comandos e retorna."""
-        seq = ["system-view", *commands, "return"]
-        return self.run_many(seq)
+        """Entra na visão de sistema, aplica os comandos e retorna.
+
+        Em equipamentos de dois estágios (NE/ATN, prompt [~name]/[*name])
+        um "commit" é enviado antes do return — sem ele a configuração
+        candidata não é aplicada e o equipamento pergunta ao sair.
+        """
+        output = self.run_many(["system-view", *commands])
+        if self.two_stage:
+            output += f"\n> commit\n{self.run('commit', timeout=60.0)}"
+        output += f"\n> return\n{self.run('return')}"
+        return output
 
     # ------------------------------------------------------------------ #
     def _read_until_prompt(self, timeout: float | None = None) -> str:
@@ -198,6 +223,12 @@ class HuaweiSession:
                 m = _HOSTNAME_RE.search(last)
                 if m:
                     bracket, raw_name = m.group(1), m.group(2).strip()
+                    # NE/ATN: [~name] / [*name] => configuração em dois
+                    # estágios (precisa de commit). O ~/* não faz parte
+                    # do sysname.
+                    if bracket == "[" and raw_name[:1] in "~*":
+                        self.two_stage = True
+                        raw_name = raw_name[1:]
                     # <name> (visão de usuário) é sempre o sysname completo.
                     # Nomes com hífen (PROM-MAR-BGP-SW01) NÃO podem ser
                     # cortados — o sufixo de sub-view só existe em [name-...]
@@ -212,9 +243,13 @@ class HuaweiSession:
 
             time.sleep(0.02)
 
+        tail = _ANSI_RE.sub("", buf).strip()
+        extra = (f"\n\nÚltima resposta parcial do equipamento:\n"
+                 f"{tail[-400:]}" if tail else
+                 " Verifique a conectividade e tente novamente.")
         raise SSHError(
-            f"Tempo esgotado ({t:.0f}s) aguardando resposta do equipamento. "
-            "Verifique a conectividade e tente novamente.")
+            f"Tempo esgotado ({t:.0f}s) aguardando o prompt do "
+            f"equipamento.{extra}")
 
     @staticmethod
     def _clean(raw: str, command: str) -> str:

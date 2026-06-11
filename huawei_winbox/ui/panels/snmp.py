@@ -190,7 +190,9 @@ class SnmpPanel(QWidget):
 
     # ------------------------------------------------------------------ #
     def _apply(self, commands: list[str]):
-        if not CommandPreviewDialog.confirm(commands, self):
+        two_stage = getattr(self.session, "two_stage", False)
+        if not CommandPreviewDialog.confirm(commands, self,
+                                            two_stage=two_stage):
             return
         self._set_busy(True, "Enviando configuração...")
 

@@ -103,7 +103,10 @@ class BasePanel(QWidget):
                        refresh_after: bool = True,
                        system_view: bool = True):
         """Mostra a pré-visualização e, se confirmado, envia via SSH."""
-        if not CommandPreviewDialog.confirm(commands, self):
+        two_stage = system_view and getattr(self.session, "two_stage", False)
+        if not CommandPreviewDialog.confirm(commands, self,
+                                            two_stage=two_stage,
+                                            system_view=system_view):
             return
         self._set_busy(True, "Enviando configuração...")
 
