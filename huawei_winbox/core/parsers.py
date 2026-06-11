@@ -75,6 +75,7 @@ def parse_interface_detail(text: str) -> dict:
         "speed": "", "duplex": "", "negotiation": "", "mtu": "",
         "tx_power": "", "rx_power": "", "bias_current": "",
         "temperature": "", "transceiver_type": "",
+        "wavelength": "", "vendor": "", "part_number": "",
         "input_rate": "", "output_rate": "",
         "input_errors": "", "output_errors": "", "raw": text,
     }
@@ -128,6 +129,47 @@ def parse_interface_detail(text: str) -> dict:
         m = re.match(r"(\d+) output error", s)
         if m:
             info["output_errors"] = m.group(1)
+    return info
+
+
+def merge_transceiver_detail(info: dict, text: str) -> dict:
+    """Mescla ``display transceiver interface <name> verbose`` em ``info``.
+
+    Em switches S-series o ``display interface`` não traz potência ótica;
+    os dados de diagnóstico (TX/RX power, corrente, temperatura) só
+    aparecem na saída verbose do transceiver. Linhas de threshold/warning
+    são ignoradas — só os valores medidos entram.
+    """
+    for line in text.splitlines():
+        s = line.strip()
+        m = re.match(r"Transceiver Type\s*:\s*(.+)", s)
+        if m:
+            info["transceiver_type"] = m.group(1).strip()
+        m = re.match(r"Wavelength\(nm\)\s*:\s*(\S+)", s)
+        if m and m.group(1) != "-":
+            info["wavelength"] = m.group(1) + " nm"
+        m = re.match(r"Vendor Name\s*:\s*(.+)", s)
+        if m and not info["vendor"]:
+            info["vendor"] = m.group(1).strip()
+        m = re.match(r"Vendor Part Number\s*:\s*(.+)", s)
+        if m:
+            info["part_number"] = m.group(1).strip()
+        # Valores medidos — "(▒▒C)" / "(C)" variam com o charset do VRP.
+        m = re.match(r"Temperature\([^)]*\)\s*:\s*(-?[\d.]+)", s)
+        if m:
+            info["temperature"] = m.group(1) + " °C"
+        m = re.match(r"Bias Current\(mA\)\s*:\s*([\d.]+)", s)
+        if m:
+            info["bias_current"] = m.group(1) + " mA"
+        m = re.match(r"RX Power\(dBM\)\s*:\s*(-?[\d.]+)", s, re.I)
+        if m:
+            info["rx_power"] = m.group(1) + " dBm"
+        m = re.match(r"TX Power\(dBM\)\s*:\s*(-?[\d.]+)", s, re.I)
+        if m:
+            info["tx_power"] = m.group(1) + " dBm"
+    if text.strip():
+        info["raw"] = (info.get("raw", "") +
+                       "\n\n===== display transceiver verbose =====\n" + text)
     return info
 
 

@@ -18,8 +18,9 @@ _PROMPT_RE = re.compile(r"[<\[]\S[^<>\[\]\r\n]{0,79}[>\]]\s*$")
 # Paginação ("---- More ----") caso screen-length não tenha sido aplicado.
 _MORE_RE = re.compile(r"-+\s*[Mm]ore\s*-+")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\r|\x1b\[16D\s*\x1b\[16D")
-# Extrai o nome do equipamento do prompt detectado.
-_HOSTNAME_RE = re.compile(r"[<\[]([^<>\[\]\r\n]+)[>\]]")
+# Extrai o nome do equipamento do prompt detectado (captura o colchete
+# para distinguir visão de usuário <name> de visão de sistema [name-...]).
+_HOSTNAME_RE = re.compile(r"([<\[])([^<>\[\]\r\n]+)[>\]]")
 
 # Comandos que podem demorar bem mais que o timeout padrão.
 _LONG_TIMEOUT = 90.0   # ping, traceroute, logbuffer extenso
@@ -77,17 +78,44 @@ class HuaweiSession:
     def connected(self) -> bool:
         return bool(self._shell and not self._shell.closed)
 
-    def open_shell(self, width: int = 220, height: int = 50) -> "paramiko.Channel":
-        """Abre um segundo shell interativo independente (usado pelo Terminal).
+    def open_terminal(self, width: int = 220, height: int = 50):
+        """Abre uma CONEXÃO SSH nova e exclusiva para o terminal interativo.
 
-        O canal retornado é exclusivo do chamador — não compartilha o lock
-        com os painéis de configuração.
+        Equipamentos VRP costumam limitar o número de canais por conexão
+        SSH — pedir um segundo invoke_shell na mesma conexão pode ficar
+        bloqueado para sempre aguardando resposta. Uma conexão dedicada
+        evita o travamento e isola completamente o terminal dos painéis.
+
+        Retorna ``(client, channel)`` — o chamador é dono dos dois e deve
+        fechá-los ao terminar. Deve ser chamado fora da thread da UI.
         """
-        if not self._client:
-            raise SSHError("Sessão SSH não está conectada.")
-        chan = self._client.invoke_shell(width=width, height=height)
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            client.connect(
+                self.host,
+                port=self.port,
+                username=self.username,
+                password=self.password,
+                timeout=self.timeout,
+                allow_agent=False,
+                look_for_keys=False,
+            )
+            transport = client.get_transport()
+            transport.set_keepalive(30)
+            # open_session com timeout: se o equipamento não responder ao
+            # pedido de canal, falha em vez de bloquear indefinidamente.
+            chan = transport.open_session(timeout=self.timeout)
+            chan.get_pty(term="vt100", width=width, height=height)
+            chan.invoke_shell()
+        except Exception as exc:
+            try:
+                client.close()
+            except Exception:
+                pass
+            raise SSHError(f"Não foi possível abrir o terminal: {exc}") from exc
         chan.settimeout(0.05)
-        return chan
+        return client, chan
 
     def close(self) -> None:
         try:
@@ -159,10 +187,17 @@ class HuaweiSession:
                 # Extrai o hostname do último prompt visível.
                 m = _HOSTNAME_RE.search(last)
                 if m:
-                    raw_name = m.group(1).strip()
-                    # Remove sufixo de sub-view: [AR-GigabitEthernet0/0/1] → AR
-                    self.hostname = raw_name.split("-")[0] if "-" in raw_name \
-                        else raw_name
+                    bracket, raw_name = m.group(1), m.group(2).strip()
+                    # <name> (visão de usuário) é sempre o sysname completo.
+                    # Nomes com hífen (PROM-MAR-BGP-SW01) NÃO podem ser
+                    # cortados — o sufixo de sub-view só existe em [name-...]
+                    # e, nesse caso, o hostname já conhecido é prefixo dele.
+                    if bracket == "<":
+                        self.hostname = raw_name
+                    elif not raw_name.startswith(self.hostname):
+                        # Visão de sistema antes de conhecermos o sysname:
+                        # usa o nome inteiro até aparecer um prompt <name>.
+                        self.hostname = raw_name
                 return buf
 
             time.sleep(0.02)

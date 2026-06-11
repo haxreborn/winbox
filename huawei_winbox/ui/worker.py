@@ -9,6 +9,13 @@ Por que Qt.QueuedConnection é obrigatório aqui:
   DIRETO no worker thread — chamadas a widgets da UI nesse contexto
   são inválidas e falham silenciosamente. QueuedConnection força a
   entrega pelo event loop da thread principal, independente de quem emite.
+
+Por que o job fica retido em _ACTIVE até o callback rodar:
+  QThreadPool deleta o QRunnable assim que run() retorna (autoDelete).
+  Com QueuedConnection o emit apenas POSTA um evento — se o objeto
+  _Signals for destruído junto com o job antes do event loop da thread
+  principal processar esse evento, o callback nunca é chamado e a UI
+  fica "consultando" para sempre.
 """
 
 from __future__ import annotations
@@ -24,6 +31,9 @@ class _Signals(QObject):
 class _Job(QRunnable):
     def __init__(self, fn, *args, **kwargs):
         super().__init__()
+        # O pool não pode deletar o runnable: o sinal enfileirado ainda
+        # referencia self.signals até a thread principal processá-lo.
+        self.setAutoDelete(False)
         self.fn = fn
         self.args = args
         self.kwargs = kwargs
@@ -38,6 +48,10 @@ class _Job(QRunnable):
             self.signals.finished.emit(result)
 
 
+# Jobs em voo — mantém o QRunnable e o _Signals vivos até a entrega.
+_ACTIVE: set[_Job] = set()
+
+
 def run_async(fn, on_done, on_error, *args, **kwargs):
     """Executa ``fn`` num pool de threads e entrega o resultado na UI.
 
@@ -45,6 +59,16 @@ def run_async(fn, on_done, on_error, *args, **kwargs):
     QueuedConnection — seguro para atualizar qualquer widget Qt.
     """
     job = _Job(fn, *args, **kwargs)
-    job.signals.finished.connect(on_done, Qt.ConnectionType.QueuedConnection)
-    job.signals.error.connect(on_error, Qt.ConnectionType.QueuedConnection)
+
+    def _done(result, _job=job):
+        _ACTIVE.discard(_job)
+        on_done(result)
+
+    def _error(message, _job=job):
+        _ACTIVE.discard(_job)
+        on_error(message)
+
+    job.signals.finished.connect(_done, Qt.ConnectionType.QueuedConnection)
+    job.signals.error.connect(_error, Qt.ConnectionType.QueuedConnection)
+    _ACTIVE.add(job)
     QThreadPool.globalInstance().start(job)

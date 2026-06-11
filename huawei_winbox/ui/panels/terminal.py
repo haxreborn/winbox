@@ -1,9 +1,11 @@
-"""Terminal interativo — canal SSH dedicado + polling em tempo real.
+"""Terminal interativo — conexão SSH dedicada + polling em tempo real.
 
-Cada abertura do painel cria um segundo canal SSH (invoke_shell) separado
-do canal usado pelos painéis de configuração. Não há lock compartilhado,
+Cada abertura do painel cria uma CONEXÃO SSH própria (equipamentos VRP
+limitam canais por conexão SSH; um segundo invoke_shell na mesma conexão
+ficaria bloqueado para sempre, congelando o aplicativo). A conexão é
+aberta em background — a janela nunca trava. Não há lock compartilhado,
 não há espera de prompt: o QTimer de 40 ms lê tudo que chegar do
-equipamento e exibe imediatamente no painel — exatamente como o PuTTY faz.
+equipamento e exibe imediatamente — exatamente como o PuTTY faz.
 
 Recursos:
 - Saída em streaming (sem esperar o prompt para mostrar)
@@ -24,6 +26,8 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton,
 )
 
+from ..worker import run_async
+
 # Sequências ANSI que causam ruído visual (mantém texto, remove formatação).
 _STRIP = re.compile(
     r"\x1b\[[0-9;]*[A-Za-z]"     # CSI sequences: cores, movimento de cursor
@@ -42,7 +46,9 @@ class TerminalPanel(QWidget):
         self.session = session
         self._history: list[str] = []
         self._hist_pos = 0
+        self._client = None      # SSHClient dedicado deste terminal
         self._chan = None
+        self._closing = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
@@ -86,27 +92,43 @@ class TerminalPanel(QWidget):
     # ------------------------------------------------------------------ #
 
     def _open_channel(self) -> None:
-        """Abre um segundo canal SSH, independente dos painéis."""
-        try:
-            self._chan = self.session.open_shell(width=220, height=50)
+        """Abre a conexão SSH dedicada em background (UI nunca trava)."""
+        self._append(
+            f"Abrindo conexão SSH dedicada com {self.session.host}...\n")
+
+        def done(result):
+            client, chan = result
+            if self._closing:
+                # Janela foi fechada antes da conexão completar.
+                try:
+                    chan.close()
+                    client.close()
+                except Exception:
+                    pass
+                return
+            self._client, self._chan = client, chan
             self._append(
-                f"Terminal conectado a {self.session.hostname} "
-                f"({self.session.host})\n"
-                "── Canal SSH dedicado (não interfere nos painéis) ──\n\n")
-        except Exception as exc:
-            self._chan = None
+                f"Conectado a {self.session.hostname} "
+                f"({self.session.host}) — conexão exclusiva do terminal.\n\n")
+            self.input.setFocus()
+
+        def fail(message: str):
             self._append(
-                f"[Falha ao abrir canal SSH: {exc}]\n\n"
-                "Reconecte ao equipamento para usar o terminal.\n")
+                f"[Falha ao abrir terminal: {message}]\n\n"
+                "Feche e reabra esta janela para tentar novamente.\n")
+
+        run_async(self.session.open_terminal, done, fail)
 
     def closeEvent(self, event) -> None:
-        """Fecha o timer e o canal ao destruir o painel."""
+        """Fecha o timer, o canal e a conexão dedicada ao destruir o painel."""
+        self._closing = True
         self._timer.stop()
-        if self._chan:
-            try:
-                self._chan.close()
-            except Exception:
-                pass
+        for obj in (self._chan, self._client):
+            if obj:
+                try:
+                    obj.close()
+                except Exception:
+                    pass
         super().closeEvent(event)
 
     # ------------------------------------------------------------------ #
@@ -134,11 +156,11 @@ class TerminalPanel(QWidget):
 
         self._append(text)
 
-        # Atualiza o label do prompt a partir da última linha visível.
-        m = re.search(r"[<\[](\S[^<>\[\]\r\n]{0,79})[>\]]", text)
-        if m:
-            name = m.group(1).split("-")[0]
-            self.prompt_lbl.setText(f"<{name}>")
+        # Atualiza o label com o último prompt recebido, exatamente como
+        # o equipamento o exibe (<PROM-MAR-BGP-SW01>, [PROM-...-vlan10]...).
+        prompts = re.findall(r"[<\[]\S[^<>\[\]\r\n]{0,79}[>\]]", text)
+        if prompts:
+            self.prompt_lbl.setText(prompts[-1])
 
     def _append(self, text: str) -> None:
         """Insere texto no final do painel sem adicionar newline extra."""

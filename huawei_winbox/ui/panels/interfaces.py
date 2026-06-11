@@ -66,6 +66,9 @@ class InterfaceDetailDialog(QDialog):
         # Módulo óptico (SFP) — só mostra se tiver algum dado
         optical_pairs = [
             ("Tipo de transceptor", info["transceiver_type"]),
+            ("Fabricante", info.get("vendor", "")),
+            ("Modelo (part number)", info.get("part_number", "")),
+            ("Comprimento de onda", info.get("wavelength", "")),
             ("TX Power", info["tx_power"]),
             ("RX Power", info["rx_power"]),
             ("Corrente do laser", info["bias_current"]),
@@ -212,7 +215,18 @@ class InterfacesPanel(BasePanel):
                     f"display interface {row['name']}", timeout=10.0)
             except Exception as exc:
                 text = f"[Erro ao consultar interface: {exc}]"
-            return parsers.parse_interface_detail(text)
+            info = parsers.parse_interface_detail(text)
+            # Potência ótica: em switches S-series ela só aparece em
+            # "display transceiver interface <nome> verbose" — o
+            # display interface não traz TX/RX power nesses modelos.
+            try:
+                tr_text = self.session.run(
+                    f"display transceiver interface {row['name']} verbose",
+                    timeout=10.0)
+            except Exception:
+                tr_text = ""
+            parsers.merge_transceiver_detail(info, tr_text)
+            return info
 
         def done(info: dict):
             self._set_busy(False, "")
