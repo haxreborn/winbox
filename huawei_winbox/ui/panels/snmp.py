@@ -123,18 +123,45 @@ class SnmpPanel(QWidget):
         self.refresh()
 
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _safe(session, cmd: str) -> str:
+        """Roda um comando com timeout curto (8 s); retorna "" se falhar.
+
+        Comandos SNMP devem responder em < 2 s. O timeout curto garante
+        que uma sintaxe inválida (que deixaria o VRP aguardando mais input)
+        não bloqueie o lock da sessão por mais de 8 s.
+        """
+        try:
+            return session.run(cmd, timeout=8.0)
+        except Exception:
+            return ""
+
     def refresh(self):
         if self._busy:
             return
         self._set_busy(True, "Consultando agente SNMP...")
 
         def fetch():
-            sys_info = parsers.parse_snmp_sys_info(
-                self.session.run("display snmp-agent sys-info"))
-            communities = parsers.parse_snmp_communities(
-                self.session.run("display snmp-agent community"))
-            traps = parsers.parse_snmp_trap_hosts(
-                self.session.run("display snmp-agent target-host"))
+            # sys-info: sempre válido, mostra versão, contact, location.
+            sys_text = self._safe(self.session, "display snmp-agent sys-info")
+            sys_info = parsers.parse_snmp_sys_info(sys_text)
+
+            # Comunidades: VRP aceita "community read" e "community write"
+            # separados; "community" sem sufixo pode não existir em todas
+            # as versões e deixar o shell aguardando.
+            comm_r = self._safe(self.session, "display snmp-agent community read")
+            comm_w = self._safe(self.session, "display snmp-agent community write")
+            communities = (parsers.parse_snmp_communities(comm_r)
+                           + parsers.parse_snmp_communities(comm_w))
+
+            # Trap hosts: tenta as duas grafias usadas em versões diferentes.
+            trap_text = self._safe(
+                self.session, "display snmp-agent target-host")
+            if not trap_text.strip():
+                trap_text = self._safe(
+                    self.session, "display snmp-agent trap host")
+            traps = parsers.parse_snmp_trap_hosts(trap_text)
+
             return sys_info, communities, traps
 
         def done(data):

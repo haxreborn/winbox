@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
 )
 
 from ...core import parsers, translator
-from ...core.session import _LONG_TIMEOUT
 from ..forms import SimpleForm
 from ..worker import run_async
 from .base import BasePanel
@@ -205,8 +204,14 @@ class InterfacesPanel(BasePanel):
         self._set_busy(True, f"Consultando {row['name']}...")
 
         def fetch():
-            text = self.session.run(
-                f"display interface {row['name']}", timeout=_LONG_TIMEOUT)
+            # Timeout curto (10 s): display interface deve ser quase imediato.
+            # Se o nome abreviado não for reconhecido, VRP retorna erro com
+            # prompt — o texto vem como raw e o diálogo ainda mostra algo útil.
+            try:
+                text = self.session.run(
+                    f"display interface {row['name']}", timeout=10.0)
+            except Exception as exc:
+                text = f"[Erro ao consultar interface: {exc}]"
             return parsers.parse_interface_detail(text)
 
         def done(info: dict):

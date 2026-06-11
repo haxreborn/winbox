@@ -77,6 +77,18 @@ class HuaweiSession:
     def connected(self) -> bool:
         return bool(self._shell and not self._shell.closed)
 
+    def open_shell(self, width: int = 220, height: int = 50) -> "paramiko.Channel":
+        """Abre um segundo shell interativo independente (usado pelo Terminal).
+
+        O canal retornado é exclusivo do chamador — não compartilha o lock
+        com os painéis de configuração.
+        """
+        if not self._client:
+            raise SSHError("Sessão SSH não está conectada.")
+        chan = self._client.invoke_shell(width=width, height=height)
+        chan.settimeout(0.05)
+        return chan
+
     def close(self) -> None:
         try:
             if self._shell:

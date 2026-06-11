@@ -129,6 +129,15 @@ class MainWindow(QMainWindow):
         sub.show()
         self._windows[label] = sub
 
+    def keyPressEvent(self, event):
+        """ESC fecha a janela interna ativa (como o Alt+F4 / Ctrl+F4)."""
+        if event.key() == Qt.Key.Key_Escape:
+            active = self.mdi.activeSubWindow()
+            if active:
+                active.close()
+                return
+        super().keyPressEvent(event)
+
     def closeEvent(self, event):
         self.session.close()
         super().closeEvent(event)
