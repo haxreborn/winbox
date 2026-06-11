@@ -103,6 +103,11 @@ class InterfacesPanel(BasePanel):
     title = "Interfaces"
     columns = ["Interface", "Físico", "Protocolo", "Descrição"]
 
+    def __init__(self, session, parent=None):
+        super().__init__(session, parent)
+        # Conecta uma única vez — não em _on_rows, que roda a cada refresh.
+        self.table.itemDoubleClicked.connect(self._show_detail_from_item)
+
     def build_toolbar(self, layout):
         for text, slot in [
             ("Habilitar", lambda: self._toggle(True)),
@@ -133,7 +138,6 @@ class InterfacesPanel(BasePanel):
                     item = self.table.item(r, c)
                     if item:
                         item.setForeground(Qt.darkGray)
-        self.table.itemDoubleClicked.connect(self._show_detail_from_item)
 
     def _show_detail_from_item(self, item):
         row = item.data(Qt.UserRole)

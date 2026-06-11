@@ -4,6 +4,7 @@ interna independente (Interfaces, BGP, OSPF, MPLS, etc.)."""
 
 from __future__ import annotations
 
+import shiboken6
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QListWidget, QMdiArea,
@@ -97,10 +98,16 @@ class MainWindow(QMainWindow):
 
     def _open_panel(self, item):
         label = item.text()
+        # A janela é destruída ao fechar (WA_DeleteOnClose); valida se a
+        # referência registrada ainda aponta para um objeto vivo antes de
+        # tentar reativá-la — senão cria uma nova.
         existing = self._windows.get(label)
-        if existing and not existing.isHidden():
+        if (existing is not None and shiboken6.isValid(existing)
+                and existing in self.mdi.subWindowList()):
+            existing.show()
             self.mdi.setActiveSubWindow(existing)
             return
+        self._windows.pop(label, None)
 
         panel_cls = dict(_MENU)[label]
         panel = panel_cls(self.session)
@@ -108,6 +115,15 @@ class MainWindow(QMainWindow):
         sub.setWidget(panel)
         sub.setWindowTitle(label)
         sub.setAttribute(Qt.WA_DeleteOnClose)
+        # Garante a barra de título completa: fechar, minimizar e maximizar.
+        sub.setWindowFlags(
+            Qt.SubWindow
+            | Qt.WindowSystemMenuHint
+            | Qt.WindowMinMaxButtonsHint
+            | Qt.WindowCloseButtonHint
+            | Qt.WindowTitleHint)
+        sub.destroyed.connect(
+            lambda _=None, l=label: self._windows.pop(l, None))
         sub.resize(720, 420)
         self.mdi.addSubWindow(sub)
         sub.show()

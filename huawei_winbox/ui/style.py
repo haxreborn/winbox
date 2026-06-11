@@ -103,7 +103,6 @@ QListWidget#sideMenu::item:hover { background: #d5e4f5; color: #1c1c1c; }
 
 QMdiArea { background: #c4c4c4; }
 QMdiSubWindow { background: #ececec; }
-QMdiSubWindow::title { background: #d9d9d9; color: #1c1c1c; }
 
 QPlainTextEdit, QTextEdit {
     background: #ffffff;

@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import re
 
-_IFACE_NAME = (
-    r"(?:GigabitEthernet|XGigabitEthernet|40GE|100GE|25GE|10GE|GE|Eth-Trunk|"
-    r"Ethernet|MEth|LoopBack|Loopback|Vlanif|Tunnel|NULL|Null|MultiGE|Pos|"
-    r"Virtual-Template|Vbdif|Sip)[\d/\.:]*"
-)
+# Nome de interface genérico: prefixo numérico opcional (40GE, 100GE),
+# letras (GE, XGE, GigabitEthernet, Eth-Trunk, Vlanif, MEth, LoopBack...)
+# e a numeração da porta (1/0/1, 0/0/1.100, 100, 0:1...). Cobre tanto os
+# nomes completos quanto as abreviações que cada comando/modelo usa.
+_IFACE_NAME = r"(?:\d{1,3})?[A-Za-z][A-Za-z0-9\-]*\d[\d/.:]*"
 
 
 def parse_interface_brief(text: str) -> list[dict]:
