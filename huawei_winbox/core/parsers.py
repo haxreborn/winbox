@@ -60,7 +60,7 @@ def parse_interface_description(text: str) -> list[dict]:
         if not m:
             continue
         rows.append({
-            "name": m.group(1),
+            "name": expand_iface_name(m.group(1)),
             "phy": m.group(2),
             "protocol": m.group(3),
             "description": (m.group(4) or "").strip(),
@@ -160,6 +160,24 @@ def is_physical_iface(name: str) -> bool:
     return True
 
 
+def expand_iface_name(name: str) -> str:
+    """Expande a abreviação do tipo da interface para o nome completo.
+
+    ``display interface description`` lista as portas abreviadas
+    (GE0/0/1, XGE0/0/4), mas comandos como ``interface GE0/0/1`` ou
+    ``display interface GE0/0/1`` falham em vários firmwares com
+    "Wrong parameter". Exemplos:
+    ``GE0/0/1`` → ``GigabitEthernet0/0/1``;
+    ``XGE0/0/4`` → ``XGigabitEthernet0/0/4``;
+    ``40GE0/0/1`` e nomes já completos ficam como estão.
+    """
+    m = re.match(r"^(\d{0,3}[A-Za-z][A-Za-z-]*?)(\d[\d/.:]*)$", name)
+    if not m:
+        return name
+    prefix, number = m.group(1), m.group(2)
+    return _IFACE_ABBREV.get(prefix, prefix) + number
+
+
 def transceiver_iface_arg(name: str) -> str:
     """Converte o nome da interface para a forma exigida por
     ``display transceiver interface``.
@@ -231,7 +249,7 @@ def parse_ip_interface_brief(text: str) -> list[dict]:
         if not m:
             continue
         rows.append({
-            "name": m.group(1),
+            "name": expand_iface_name(m.group(1)),
             "ip": m.group(2),
             "physical": m.group(3),
             "protocol": m.group(4),
@@ -468,7 +486,7 @@ def parse_nat_outbound(text: str) -> list[dict]:
         if not m:
             continue
         rows.append({
-            "interface": m.group(1),
+            "interface": expand_iface_name(m.group(1)),
             "acl": m.group(2),
             "target": m.group(3),
             "type": m.group(4),
@@ -484,8 +502,8 @@ def parse_nat_servers(text: str) -> list[dict]:
         line = line.strip()
         m = re.match(rf"^Interface\s*:\s*({_IFACE_NAME})", line)
         if m:
-            current = {"interface": m.group(1), "protocol": "",
-                       "global": "", "inside": ""}
+            current = {"interface": expand_iface_name(m.group(1)),
+                       "protocol": "", "global": "", "inside": ""}
             rows.append(current)
             continue
         if current is None:
