@@ -1,18 +1,12 @@
-"""Terminal interativo — conexão SSH dedicada + polling em tempo real.
+"""Terminal interativo — conexão SSH dedicada, tudo na área preta.
 
-Cada abertura do painel cria uma CONEXÃO SSH própria (equipamentos VRP
-limitam canais por conexão SSH; um segundo invoke_shell na mesma conexão
-ficaria bloqueado para sempre, congelando o aplicativo). A conexão é
-aberta em background — a janela nunca trava. Não há lock compartilhado,
-não há espera de prompt: o QTimer de 40 ms lê tudo que chegar do
-equipamento e exibe imediatamente — exatamente como o PuTTY faz.
+Toda a interação acontece no widget de saída (fundo preto), como no PuTTY:
+o usuário vê o prompt do equipamento e digita diretamente nele. Cada tecla
+é enviada ao dispositivo imediatamente; o próprio VRP faz o eco de volta.
+O QTimer de 40 ms exibe tudo que chegar do equipamento em streaming.
 
-Recursos:
-- Saída em streaming (sem esperar o prompt para mostrar)
-- Prompts interativos funcionam (ex.: confirmação do save "y/n")
-- Histórico de comandos com ↑/↓
-- Tab completa no terminal (enviado para o dispositivo)
-- Ctrl+C, Ctrl+Z e outros control codes
+A conexão é aberta em background (nova SSHClient dedicada) — a janela nunca
+congela, mesmo que o equipamento demore para aceitar a conexão.
 """
 
 from __future__ import annotations
@@ -20,22 +14,139 @@ from __future__ import annotations
 import re
 import socket
 
-from PySide6.QtCore import Qt, QEvent, QTimer
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPlainTextEdit,
-    QLabel, QPushButton,
-)
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QPlainTextEdit
 
 from ..worker import run_async
 
-# Sequências ANSI que causam ruído visual (mantém texto, remove formatação).
+# Remove sequências ANSI problemáticas e paginação "---- More ----".
 _STRIP = re.compile(
-    r"\x1b\[[0-9;]*[A-Za-z]"     # CSI sequences: cores, movimento de cursor
-    r"|\x1b\][^\x07]*\x07"        # OSC sequences: título da janela
-    r"|\x1b[>=]"                  # DECPNM / DECPAM
-    r"|\x1b\[16D\s*\x1b\[16D"    # VRP backspace-erase pattern
-    r"|\x08+"                     # backspace characters
+    r"\x1b\[[0-9;]*[A-Za-z]"          # CSI sequences (cores, cursor)
+    r"|\x1b\][^\x07]*\x07"             # OSC sequences (título)
+    r"|\x1b[>=]"                        # DECPNM / DECPAM
+    r"|\x1b\[16D\s*\x1b\[16D"          # VRP backspace-erase pattern
+    r"|\x08+"                           # bare backspaces
+    r"|[ \t]*----[ \t]*[Mm]ore[ \t]*----[ \t]*\x08*[ \t]*"  # ---- More ----
 )
+
+
+class _TerminalView(QPlainTextEdit):
+    """Widget de saída que também captura teclas e as envia ao canal SSH.
+
+    Não usa QLineEdit separado — tudo acontece na mesma tela preta, como
+    o PuTTY. Caracteres digitados são enviados ao dispositivo; o eco de
+    volta aparece via _poll() no terminal.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("terminal")
+        self.setReadOnly(True)   # apenas o canal SSH "escreve" aqui
+        self.setMaximumBlockCount(5000)
+        self._chan = None
+        self._history: list[str] = []
+        self._hist_pos = 0
+        self._typed: str = ""    # buffer local do que o usuário está digitando
+
+    def attach(self, chan) -> None:
+        self._chan = chan
+
+    def detach(self) -> None:
+        self._chan = None
+
+    # ------------------------------------------------------------------ #
+    def keyPressEvent(self, event) -> None:  # noqa: C901 — switch é extenso
+        chan = self._chan
+        key = event.key()
+        mods = event.modifiers()
+        char = event.text()
+
+        # Scroll sem canal (visualização do histórico da sessão)
+        if key == Qt.Key.Key_PageUp:
+            self.verticalScrollBar().setValue(
+                self.verticalScrollBar().value() - self.height())
+            return
+        if key == Qt.Key.Key_PageDown:
+            self.verticalScrollBar().setValue(
+                self.verticalScrollBar().value() + self.height())
+            return
+
+        if not chan or chan.closed:
+            return
+
+        # ── Enter ───────────────────────────────────────────────────────
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            cmd = self._typed
+            if cmd.strip():
+                self._history.append(cmd)
+            self._hist_pos = len(self._history)
+            self._typed = ""
+            self._send(cmd + "\n")
+            return
+
+        # ── Backspace ───────────────────────────────────────────────────
+        if key == Qt.Key.Key_Backspace:
+            if self._typed:
+                self._typed = self._typed[:-1]
+            self._send("\x08")
+            return
+
+        # ── ↑ histórico ─────────────────────────────────────────────────
+        if key == Qt.Key.Key_Up:
+            if self._history and self._hist_pos > 0:
+                self._hist_pos -= 1
+                self._replace_typed(self._history[self._hist_pos])
+            return
+
+        # ── ↓ histórico ─────────────────────────────────────────────────
+        if key == Qt.Key.Key_Down:
+            if self._hist_pos < len(self._history) - 1:
+                self._hist_pos += 1
+                self._replace_typed(self._history[self._hist_pos])
+            else:
+                self._hist_pos = len(self._history)
+                self._replace_typed("")
+            return
+
+        # ── Tab: autocomplete do VRP ────────────────────────────────────
+        if key == Qt.Key.Key_Tab:
+            partial = self._typed
+            self._typed = ""
+            self._send(partial + "\t")
+            return
+
+        # ── Ctrl+C: interrompe comando ──────────────────────────────────
+        if key == Qt.Key.Key_C and mods == Qt.KeyboardModifier.ControlModifier:
+            self._typed = ""
+            self._send("\x03")
+            return
+
+        # ── Ctrl+Z ──────────────────────────────────────────────────────
+        if key == Qt.Key.Key_Z and mods == Qt.KeyboardModifier.ControlModifier:
+            self._send("\x1a")
+            return
+
+        # ── Caractere imprimível ────────────────────────────────────────
+        if char:
+            self._typed += char
+            self._send(char)
+
+    # ------------------------------------------------------------------ #
+    def _send(self, data: str | bytes) -> None:
+        chan = self._chan
+        if not chan or chan.closed:
+            return
+        try:
+            chan.send(data)
+        except Exception:
+            pass
+
+    def _replace_typed(self, new_text: str) -> None:
+        """Substitui o texto digitado: Ctrl+U limpa a linha, depois re-digita."""
+        self._send("\x15")          # Ctrl+U — limpa linha atual no VRP VTY
+        self._typed = new_text
+        if new_text:
+            self._send(new_text)
 
 
 class TerminalPanel(QWidget):
@@ -44,62 +155,35 @@ class TerminalPanel(QWidget):
     def __init__(self, session, parent=None):
         super().__init__(parent)
         self.session = session
-        self._history: list[str] = []
-        self._hist_pos = 0
-        self._client = None      # SSHClient dedicado deste terminal
+        self._client = None
         self._chan = None
         self._closing = False
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(6, 6, 6, 6)
-        root.setSpacing(4)
+        root.setContentsMargins(4, 4, 4, 4)
+        root.setSpacing(0)
 
-        # ── saída ──────────────────────────────────────────────────────
-        self.output = QPlainTextEdit()
-        self.output.setObjectName("terminal")
-        self.output.setReadOnly(True)
-        # Limita o buffer a 5 000 linhas para não crescer infinitamente.
-        self.output.setMaximumBlockCount(5000)
+        self.output = _TerminalView(self)
         root.addWidget(self.output)
 
-        # ── linha de entrada ───────────────────────────────────────────
-        bar = QHBoxLayout()
-        self.prompt_lbl = QLabel(f"<{session.hostname}>")
-        self.prompt_lbl.setMinimumWidth(120)
-        bar.addWidget(self.prompt_lbl)
-
-        self.input = QLineEdit()
-        self.input.setPlaceholderText(
-            "comando VRP — Enter envia  ·  ↑/↓ histórico  ·  Tab autocompleta")
-        self.input.returnPressed.connect(self._send)
-        self.input.installEventFilter(self)
-        bar.addWidget(self.input, 1)
-
-        root.addLayout(bar)
-
-        # ── canal SSH dedicado ─────────────────────────────────────────
-        self._open_channel()
-
-        # ── polling: lê o canal a cada 40 ms ──────────────────────────
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._poll)
         self._timer.start(40)
 
-        self.input.setFocus()
+        self._connect_async()
+        self.output.setFocus()
 
     # ------------------------------------------------------------------ #
-    # Ciclo de vida
+    # Conexão
     # ------------------------------------------------------------------ #
 
-    def _open_channel(self) -> None:
-        """Abre a conexão SSH dedicada em background (UI nunca trava)."""
+    def _connect_async(self) -> None:
         self._append(
-            f"Abrindo conexão SSH dedicada com {self.session.host}...\n")
+            f"Conectando a {self.session.host} (nova sessão SSH dedicada)...\n")
 
         def done(result):
             client, chan = result
             if self._closing:
-                # Janela foi fechada antes da conexão completar.
                 try:
                     chan.close()
                     client.close()
@@ -107,22 +191,24 @@ class TerminalPanel(QWidget):
                     pass
                 return
             self._client, self._chan = client, chan
-            self._append(
-                f"Conectado a {self.session.hostname} "
-                f"({self.session.host}) — conexão exclusiva do terminal.\n\n")
-            self.input.setFocus()
+            self.output.attach(chan)
+            # Desativa paginação nesta sessão também.
+            try:
+                chan.send("screen-length 0 temporary\n")
+            except Exception:
+                pass
 
-        def fail(message: str):
+        def fail(msg: str):
             self._append(
-                f"[Falha ao abrir terminal: {message}]\n\n"
+                f"\n[Falha ao conectar: {msg}]\n"
                 "Feche e reabra esta janela para tentar novamente.\n")
 
         run_async(self.session.open_terminal, done, fail)
 
     def closeEvent(self, event) -> None:
-        """Fecha o timer, o canal e a conexão dedicada ao destruir o painel."""
         self._closing = True
         self._timer.stop()
+        self.output.detach()
         for obj in (self._chan, self._client):
             if obj:
                 try:
@@ -132,115 +218,30 @@ class TerminalPanel(QWidget):
         super().closeEvent(event)
 
     # ------------------------------------------------------------------ #
-    # Polling / saída
+    # Polling
     # ------------------------------------------------------------------ #
 
     def _poll(self) -> None:
-        """Chamado pelo QTimer: lê o que o equipamento enviou e exibe."""
-        if not self._chan or self._chan.closed:
+        chan = self._chan
+        if not chan or chan.closed:
             return
         try:
-            data = self._chan.recv(4096)
+            data = chan.recv(4096)
         except socket.timeout:
             return
         except Exception:
             return
         if not data:
             return
-
-        # Decodifica e remove sequências ANSI problemáticas.
-        text = data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+        text = (data.decode("utf-8", errors="replace")
+                .replace("\r\n", "\n").replace("\r", "\n"))
         text = _STRIP.sub("", text)
-        if not text:
-            return
-
-        self._append(text)
-
-        # Atualiza o label com o último prompt recebido, exatamente como
-        # o equipamento o exibe (<PROM-MAR-BGP-SW01>, [PROM-...-vlan10]...).
-        prompts = re.findall(r"[<\[]\S[^<>\[\]\r\n]{0,79}[>\]]", text)
-        if prompts:
-            self.prompt_lbl.setText(prompts[-1])
+        if text:
+            self._append(text)
 
     def _append(self, text: str) -> None:
-        """Insere texto no final do painel sem adicionar newline extra."""
         cursor = self.output.textCursor()
         cursor.movePosition(cursor.MoveOperation.End)
         cursor.insertText(text)
         self.output.setTextCursor(cursor)
         self.output.ensureCursorVisible()
-
-    # ------------------------------------------------------------------ #
-    # Envio de comandos
-    # ------------------------------------------------------------------ #
-
-    def _send(self) -> None:
-        if not self._chan or self._chan.closed:
-            self._append(
-                "\n[Canal fechado — feche e reabra o Terminal]\n")
-            return
-        text = self.input.text()
-        if text.strip():
-            self._history.append(text)
-        self._hist_pos = len(self._history)
-        self.input.clear()
-        try:
-            self._chan.send(text + "\n")
-        except Exception as exc:
-            self._append(f"\n[Erro ao enviar: {exc}]\n")
-
-    def _send_raw(self, data: bytes) -> None:
-        """Envia bytes brutos (ex.: Ctrl+C = b'\\x03')."""
-        if self._chan and not self._chan.closed:
-            try:
-                self._chan.send(data)
-            except Exception:
-                pass
-
-    # ------------------------------------------------------------------ #
-    # Event filter — ↑/↓ histórico, Tab, Ctrl+C
-    # ------------------------------------------------------------------ #
-
-    def eventFilter(self, obj, event):
-        if obj is not self.input:
-            return super().eventFilter(obj, event)
-        if event.type() != QEvent.Type.KeyPress:
-            return super().eventFilter(obj, event)
-
-        key = event.key()
-        mods = event.modifiers()
-
-        # ↑/↓ — histórico
-        if key == Qt.Key.Key_Up:
-            if self._history and self._hist_pos > 0:
-                self._hist_pos -= 1
-                self.input.setText(self._history[self._hist_pos])
-            return True
-        if key == Qt.Key.Key_Down:
-            if self._hist_pos < len(self._history) - 1:
-                self._hist_pos += 1
-                self.input.setText(self._history[self._hist_pos])
-            else:
-                self._hist_pos = len(self._history)
-                self.input.clear()
-            return True
-
-        # Tab — envia para o equipamento (autocomplete do VRP)
-        if key == Qt.Key.Key_Tab:
-            cmd = self.input.text()
-            self._send_raw((cmd + "\t").encode())
-            self.input.clear()
-            return True
-
-        # Ctrl+C — interrompe comando em execução no VRP
-        if key == Qt.Key.Key_C and mods == Qt.KeyboardModifier.ControlModifier:
-            self._send_raw(b"\x03")
-            self.input.clear()
-            return True
-
-        # Ctrl+Z
-        if key == Qt.Key.Key_Z and mods == Qt.KeyboardModifier.ControlModifier:
-            self._send_raw(b"\x1a")
-            return True
-
-        return super().eventFilter(obj, event)

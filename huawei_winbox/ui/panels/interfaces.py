@@ -220,8 +220,9 @@ class InterfacesPanel(BasePanel):
             # "display transceiver interface <nome> verbose" — o
             # display interface não traz TX/RX power nesses modelos.
             try:
+                iface_arg = parsers.transceiver_iface_arg(row["name"])
                 tr_text = self.session.run(
-                    f"display transceiver interface {row['name']} verbose",
+                    f"display transceiver interface {iface_arg} verbose",
                     timeout=10.0)
             except Exception:
                 tr_text = ""

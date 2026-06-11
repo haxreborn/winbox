@@ -132,6 +132,22 @@ def parse_interface_detail(text: str) -> dict:
     return info
 
 
+def transceiver_iface_arg(name: str) -> str:
+    """Convert an interface name to the two-token form required by
+    ``display transceiver interface``.
+
+    VRP parses ``display transceiver interface`` differently from
+    ``display interface``: the interface type and number MUST be separated
+    by a space.  ``XGigabitEthernet0/0/4`` → ``XGigabitEthernet 0/0/4``.
+    """
+    # Find the last letter→digit boundary that starts a port number.
+    m = re.search(r'([A-Za-z])(\d[\d/.:]+)$', name)
+    if m:
+        pos = m.start(2)
+        return name[:pos] + ' ' + name[pos:]
+    return name
+
+
 def merge_transceiver_detail(info: dict, text: str) -> dict:
     """Mescla ``display transceiver interface <name> verbose`` em ``info``.
 
