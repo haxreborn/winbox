@@ -75,13 +75,15 @@ class _TerminalView(QPlainTextEdit):
             return
 
         # ── Enter ───────────────────────────────────────────────────────
+        # Cada caractere já foi enviado ao equipamento quando foi digitado;
+        # aqui vai SOMENTE o \n (reenviar o comando inteiro duplicaria tudo).
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             cmd = self._typed
             if cmd.strip():
                 self._history.append(cmd)
             self._hist_pos = len(self._history)
             self._typed = ""
-            self._send(cmd + "\n")
+            self._send("\n")
             return
 
         # ── Backspace ───────────────────────────────────────────────────
@@ -109,10 +111,9 @@ class _TerminalView(QPlainTextEdit):
             return
 
         # ── Tab: autocomplete do VRP ────────────────────────────────────
+        # O texto parcial já está na linha do equipamento; envia só o \t.
         if key == Qt.Key.Key_Tab:
-            partial = self._typed
-            self._typed = ""
-            self._send(partial + "\t")
+            self._send("\t")
             return
 
         # ── Ctrl+C: interrompe comando ──────────────────────────────────

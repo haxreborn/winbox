@@ -132,20 +132,33 @@ def parse_interface_detail(text: str) -> dict:
     return info
 
 
+# Abreviações usadas em "display interface description" que o comando
+# "display transceiver interface" NÃO aceita — precisam do nome completo.
+# 40GE/100GE/25GE já são o nome completo do tipo e ficam como estão.
+_IFACE_ABBREV = {
+    "GE": "GigabitEthernet",
+    "XGE": "XGigabitEthernet",
+    "FE": "FastEthernet",
+    "Eth": "Ethernet",
+}
+
+
 def transceiver_iface_arg(name: str) -> str:
-    """Convert an interface name to the two-token form required by
+    """Converte o nome da interface para a forma exigida por
     ``display transceiver interface``.
 
-    VRP parses ``display transceiver interface`` differently from
-    ``display interface``: the interface type and number MUST be separated
-    by a space.  ``XGigabitEthernet0/0/4`` → ``XGigabitEthernet 0/0/4``.
+    O VRP trata tipo e número como tokens separados nesse comando — e não
+    aceita as abreviações da tabela de descrição. Exemplos:
+    ``XGE0/0/4`` → ``XGigabitEthernet 0/0/4``;
+    ``GE0/0/1`` → ``GigabitEthernet 0/0/1``;
+    ``40GE0/0/1`` → ``40GE 0/0/1``.
     """
-    # Find the last letter→digit boundary that starts a port number.
-    m = re.search(r'([A-Za-z])(\d[\d/.:]+)$', name)
-    if m:
-        pos = m.start(2)
-        return name[:pos] + ' ' + name[pos:]
-    return name
+    m = re.match(r"^(\d{0,3}[A-Za-z][A-Za-z-]*?)(\d[\d/.:]*)$", name)
+    if not m:
+        return name
+    prefix, number = m.group(1), m.group(2)
+    prefix = _IFACE_ABBREV.get(prefix, prefix)
+    return f"{prefix} {number}"
 
 
 def merge_transceiver_detail(info: dict, text: str) -> dict:
