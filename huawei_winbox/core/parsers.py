@@ -734,3 +734,218 @@ def parse_snmp_trap_hosts(text: str) -> list[dict]:
         if m:
             current["version"] = m.group(1)
     return rows
+
+
+# ──────────────────────────────────────────────────────────────────────────── #
+# STP / MSTP
+# ──────────────────────────────────────────────────────────────────────────── #
+def parse_stp_brief(text: str) -> list[dict]:
+    """``display stp brief`` -> [{instance, vlan, priority, role, state, interface}]"""
+    rows = []
+    # Linha típica: "  0    1-10   CIST   32768  GE0/0/1        DESI  FORW"
+    # ou:           "MSTI  Inst VlanMapped  Priority  PortName  Role  STP State"
+    header_seen = False
+    for line in text.splitlines():
+        s = line.strip()
+        if re.search(r"\bMSTI\b|\bInst\b|\bVlan\b", s, re.I):
+            header_seen = True
+            continue
+        if not header_seen:
+            continue
+        parts = s.split()
+        if len(parts) >= 5:
+            rows.append({
+                "instance": parts[0],
+                "vlan": parts[1] if len(parts) > 5 else "",
+                "priority": parts[-4] if len(parts) > 4 else "",
+                "role": parts[-2] if len(parts) > 2 else "",
+                "state": parts[-1],
+                "interface": parts[-3] if len(parts) > 3 else "",
+            })
+    # Fallback: formato mais simples "MSTID  Port     Role  STPState"
+    if not rows:
+        for line in text.splitlines():
+            s = line.strip()
+            m = re.match(r"(\d+)\s+(\S+)\s+(ROOT|DESI|ALTE|BACK|MAST|DISA)\s+(FORW|DISC|LEAR|BKUP|\S+)", s, re.I)
+            if m:
+                rows.append({
+                    "instance": m.group(1),
+                    "vlan": "",
+                    "priority": "",
+                    "role": m.group(3),
+                    "state": m.group(4),
+                    "interface": m.group(2),
+                })
+    return rows
+
+
+# ──────────────────────────────────────────────────────────────────────────── #
+# VRRP
+# ──────────────────────────────────────────────────────────────────────────── #
+def parse_vrrp(text: str) -> list[dict]:
+    """``display vrrp brief`` -> [{interface, vrid, state, virtual_ip, priority, master}]"""
+    rows = []
+    for line in text.splitlines():
+        s = line.strip()
+        # GigabitEthernet0/0/1   1   Master   192.168.1.1   100   192.168.1.2
+        m = re.match(
+            rf"^({_IFACE_NAME})\s+(\d+)\s+(\w+)\s+"
+            r"(\d{1,3}(?:\.\d{1,3}){3})\s+(\d+)\s+(\S+)", s)
+        if m:
+            rows.append({
+                "interface": m.group(1),
+                "vrid": m.group(2),
+                "state": m.group(3),
+                "virtual_ip": m.group(4),
+                "priority": m.group(5),
+                "master": m.group(6),
+            })
+    return rows
+
+
+# ──────────────────────────────────────────────────────────────────────────── #
+# IPv6
+# ──────────────────────────────────────────────────────────────────────────── #
+def parse_ipv6_interfaces(text: str) -> list[dict]:
+    """``display ipv6 interface brief`` -> [{name, address, prefix, state}]"""
+    rows = []
+    for line in text.splitlines():
+        s = line.strip()
+        m = re.match(rf"^({_IFACE_NAME})\s+([0-9A-Fa-f:]+(?:/\d+)?)\s+(\S+)", s)
+        if m:
+            addr = m.group(2)
+            parts = addr.split("/")
+            rows.append({
+                "name": expand_iface_name(m.group(1)),
+                "address": parts[0],
+                "prefix": parts[1] if len(parts) > 1 else "",
+                "state": m.group(3),
+            })
+    return rows
+
+
+def parse_ipv6_routing(text: str) -> list[dict]:
+    """``display ipv6 routing-table`` -> [{name, address, prefix, state}]"""
+    rows = []
+    dest_re = re.compile(r"^((?:[0-9A-Fa-f:]+|::)/\d+)")
+    nh_re = re.compile(r"NextHop\s*:\s*([0-9A-Fa-f:]+)", re.I)
+    proto_re = re.compile(r"Protocol\s*:\s*(\S+)", re.I)
+    current: dict | None = None
+    for line in text.splitlines():
+        s = line.strip()
+        m = dest_re.match(s)
+        if m:
+            dest = m.group(1)
+            parts = dest.split("/")
+            current = {"name": parts[0], "address": "",
+                       "prefix": parts[1] if len(parts) > 1 else "", "state": ""}
+            rows.append(current)
+            continue
+        if current is None:
+            continue
+        m = nh_re.search(s)
+        if m:
+            current["address"] = m.group(1)
+        m = proto_re.search(s)
+        if m:
+            current["state"] = m.group(1)
+    return rows
+
+
+# ──────────────────────────────────────────────────────────────────────────── #
+# MAC Address Table
+# ──────────────────────────────────────────────────────────────────────────── #
+def parse_mac_table(text: str) -> list[dict]:
+    """``display mac-address-table`` -> [{mac, vlan, type, interface}]"""
+    rows = []
+    pattern = re.compile(
+        r"^([0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4})\s+"
+        r"(\d+)\s+(\w+)\s+\S+\s+(\S+)"
+    )
+    for line in text.splitlines():
+        m = pattern.match(line.strip())
+        if not m:
+            continue
+        rows.append({
+            "mac": m.group(1),
+            "vlan": m.group(2),
+            "type": m.group(3),
+            "interface": expand_iface_name(m.group(4)),
+        })
+    return rows
+
+
+# ──────────────────────────────────────────────────────────────────────────── #
+# Port Security
+# ──────────────────────────────────────────────────────────────────────────── #
+def parse_port_security(text: str) -> list[dict]:
+    """``display port-security`` -> [{interface, enabled, max_mac, action, dhcp_snooping}]"""
+    rows = []
+    current: dict | None = None
+    for line in text.splitlines():
+        s = line.strip()
+        m = re.match(rf"^({_IFACE_NAME})", s)
+        if m and re.search(r"[Pp]ort|[Ee]nable|[Dd]isable", s):
+            current = {
+                "interface": expand_iface_name(m.group(1)),
+                "enabled": "—", "max_mac": "—",
+                "action": "—", "dhcp_snooping": "—",
+            }
+            rows.append(current)
+            continue
+        if current is None:
+            continue
+        if re.search(r"port.security\s*:\s*enable", s, re.I):
+            current["enabled"] = "sim"
+        elif re.search(r"port.security\s*:\s*disable", s, re.I):
+            current["enabled"] = "não"
+        m2 = re.search(r"max.mac.num\s*:\s*(\d+)", s, re.I)
+        if m2:
+            current["max_mac"] = m2.group(1)
+        m2 = re.search(r"action\s*:\s*(\w+)", s, re.I)
+        if m2:
+            current["action"] = m2.group(1)
+        if re.search(r"dhcp.snoop.*enable", s, re.I):
+            current["dhcp_snooping"] = "sim"
+    # Fallback: saída simples quando não tem port-security configurado
+    if not rows:
+        return [{"interface": "—", "enabled": "não configurado",
+                 "max_mac": "—", "action": "—", "dhcp_snooping": "—"}]
+    return rows
+
+
+# ──────────────────────────────────────────────────────────────────────────── #
+# QoS applied policies
+# ──────────────────────────────────────────────────────────────────────────── #
+def parse_qos_policies(text: str) -> list[dict]:
+    """``display traffic policy applied-record`` -> [{type, name, detail, applied}]"""
+    rows = []
+    for line in text.splitlines():
+        s = line.strip()
+        # Policy application: "GigabitEthernet0/0/1  inbound  MyPolicy"
+        m = re.match(rf"^({_IFACE_NAME})\s+(inbound|outbound)\s+(\S+)", s, re.I)
+        if m:
+            rows.append({
+                "type": "Aplicada",
+                "name": m.group(3),
+                "detail": f"{m.group(2)}",
+                "applied": m.group(1),
+            })
+            continue
+        # Traffic policy definition: "Policy: MyPolicy"
+        m = re.match(r"^Policy\s*:\s*(\S+)", s, re.I)
+        if m:
+            rows.append({"type": "Política", "name": m.group(1),
+                         "detail": "", "applied": ""})
+            continue
+        # Classifier entry: "  Classifier: MyCls  Behavior: MyBeh"
+        m = re.match(r"Classifier\s*:\s*(\S+)\s+Behavior\s*:\s*(\S+)", s, re.I)
+        if m:
+            rows.append({"type": "Classificador→Comportamento",
+                         "name": m.group(1),
+                         "detail": f"→ {m.group(2)}", "applied": ""})
+    # If empty, fetch all defined classifiers/behaviors
+    if not rows:
+        rows.append({"type": "—", "name": "Nenhuma política aplicada",
+                     "detail": "", "applied": ""})
+    return rows

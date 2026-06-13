@@ -31,16 +31,29 @@ from .panels.logs import LogsPanel
 from .panels.tools import ToolsPanel
 from .panels.system import SystemPanel
 from .panels.terminal import TerminalPanel
+from .panels.stp import StpPanel
+from .panels.vrrp import VrrpPanel
+from .panels.ipv6 import Ipv6Panel
+from .panels.qos import QosPanel
+from .panels.portsecurity import PortSecurityPanel
+from .panels.hardware import HardwarePanel
+from .panels.mactable import MacTablePanel
 
 _MENU = [
     ("Interfaces", InterfacesPanel),
     ("Endereços IP", AddressesPanel),
     ("VLANs", VlansPanel),
+    ("Tabela MAC", MacTablePanel),
     ("Rotas", RoutesPanel),
     ("ARP", ArpPanel),
     ("BGP", BgpPanel),
     ("OSPF", OspfPanel),
+    ("IPv6", Ipv6Panel),
     ("MPLS / LDP", MplsPanel),
+    ("STP / MSTP", StpPanel),
+    ("VRRP", VrrpPanel),
+    ("QoS", QosPanel),
+    ("Segurança L2", PortSecurityPanel),
     ("Servidor DHCP", DhcpPanel),
     ("NAT", NatPanel),
     ("ACL / Firewall", AclPanel),
@@ -49,6 +62,7 @@ _MENU = [
     ("Serviços", ServicesPanel),
     ("SNMP", SnmpPanel),
     ("Logs", LogsPanel),
+    ("Hardware", HardwarePanel),
     ("Ferramentas", ToolsPanel),
     ("Sistema", SystemPanel),
     ("Novo Terminal", TerminalPanel),

@@ -15,8 +15,11 @@ class AclPanel(BasePanel):
 
     def build_toolbar(self, layout):
         for text, slot in [
-            ("Nova regra...", self._add_rule),
-            ("Aplicar na interface...", self._apply_iface),
+            ("Regra básica...", self._add_rule),
+            ("Regra avançada...", self._add_advanced_rule),
+            ("ACL nomeada...", self._named_acl),
+            ("Aplicar interface...", self._apply_iface),
+            ("Traffic policy...", self._traffic_policy),
         ]:
             btn = QPushButton(text)
             btn.clicked.connect(slot)
@@ -39,18 +42,60 @@ class AclPanel(BasePanel):
 
     def _add_rule(self):
         values = SimpleForm.ask(
-            "Nova regra de ACL",
-            [("acl_number", "Número da ACL (2000-2999 básica, "
-                            "3000-3999 avançada)", "int", 2000),
+            "Nova regra básica de ACL",
+            [("acl_number",
+              "Número da ACL (2000-2999 básica, 3000-3999 avançada)",
+              "int", 2000),
              ("action", "Ação", "choice:permit|deny", "permit"),
              ("source", "Origem (IP ou 'any')", "text", "any"),
-             ("wildcard", "Curinga (ex.: 0.0.0.255)", "text", ""),
+             ("wildcard", "Curinga origem (ex.: 0.0.0.255)", "text", ""),
              ("rule_id", "ID da regra (0 = automático)", "int", 0)],
             self)
         if values:
             self.apply_commands(translator.acl_rule(
                 values["acl_number"], values["action"], values["source"],
                 values["wildcard"], rule_id=values["rule_id"]))
+
+    def _add_advanced_rule(self):
+        values = SimpleForm.ask(
+            "Nova regra avançada de ACL (3000-3999)",
+            [("acl_number", "Número da ACL avançada", "int", 3000),
+             ("action", "Ação", "choice:permit|deny", "permit"),
+             ("protocol",
+              "Protocolo",
+              "choice:ip|tcp|udp|icmp|ospf|gre",
+              "ip"),
+             ("src_ip", "IP de origem (ou 'any')", "text", "any"),
+             ("src_wildcard", "Curinga de origem", "text", ""),
+             ("dst_ip", "IP de destino (ou 'any')", "text", "any"),
+             ("dst_wildcard", "Curinga de destino", "text", ""),
+             ("src_port", "Porta de origem (0 = qualquer)", "int", 0),
+             ("dst_port", "Porta de destino (0 = qualquer)", "int", 0),
+             ("rule_id", "ID da regra (0 = automático)", "int", 0)],
+            self)
+        if values:
+            self.apply_commands(translator.acl_advanced_rule(
+                values["acl_number"], values["action"], values["protocol"],
+                values["src_ip"], values["src_wildcard"],
+                values["dst_ip"], values["dst_wildcard"],
+                src_port=values["src_port"] or None,
+                dst_port=values["dst_port"] or None,
+                rule_id=values["rule_id"] or None))
+
+    def _named_acl(self):
+        values = SimpleForm.ask(
+            "ACL Nomeada",
+            [("name", "Nome da ACL", "text", ""),
+             ("acl_type",
+              "Tipo",
+              "choice:advance|basic|link",
+              "advance"),
+             ("remove", "Remover ACL nomeada", "bool", False)],
+            self)
+        if values and values["name"]:
+            self.apply_commands(translator.acl_named(
+                values["name"], values["acl_type"],
+                remove=values["remove"]))
 
     def _remove_rule(self):
         row = self.selected_row()
@@ -80,3 +125,16 @@ class AclPanel(BasePanel):
             self.apply_commands(translator.traffic_filter(
                 values["interface"], values["direction"],
                 values["acl_number"], remove=values["remove"]))
+
+    def _traffic_policy(self):
+        values = SimpleForm.ask(
+            "Aplicar Traffic Policy na interface",
+            [("interface", "Interface", "text", ""),
+             ("direction", "Direção", "choice:inbound|outbound", "inbound"),
+             ("policy_name", "Nome da traffic policy", "text", ""),
+             ("remove", "Remover policy", "bool", False)],
+            self)
+        if values and values["interface"] and values["policy_name"]:
+            self.apply_commands(translator.traffic_policy_interface(
+                values["interface"], values["direction"],
+                values["policy_name"], remove=values["remove"]))

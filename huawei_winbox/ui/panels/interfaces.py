@@ -117,6 +117,11 @@ class InterfacesPanel(BasePanel):
             ("Descrição...", self._edit_description),
             ("Endereço IP...", self._add_ip),
             ("MTU...", self._set_mtu),
+            ("Velocidade/Duplex...", self._speed_duplex),
+            ("L2↔L3...", self._portswitch),
+            ("Loopback...", self._loopback),
+            ("Eth-Trunk...", self._eth_trunk),
+            ("Sub-interface...", self._subinterface),
             ("Detalhes", self._show_detail),
         ]:
             btn = QPushButton(text)
@@ -220,6 +225,78 @@ class InterfacesPanel(BasePanel):
         if values and values["mtu"]:
             self.apply_commands(
                 translator.interface_mtu(row["name"], values["mtu"]))
+
+    def _speed_duplex(self):
+        row = self._need_selection()
+        if not row:
+            return
+        values = SimpleForm.ask(
+            f"Velocidade/Duplex — {row['name']}",
+            [("speed", "Velocidade", "choice:auto|10|100|1000", "auto"),
+             ("duplex", "Duplex", "choice:auto|full|half", "auto")],
+            self)
+        if values:
+            cmds = translator.interface_speed(row["name"], values["speed"])
+            cmds += translator.interface_duplex(row["name"], values["duplex"])
+            self.apply_commands(cmds)
+
+    def _portswitch(self):
+        row = self._need_selection()
+        if not row:
+            return
+        values = SimpleForm.ask(
+            f"Modo L2/L3 — {row['name']}",
+            [("mode", "Modo", "choice:L2 (portswitch)|L3 (undo portswitch)", "L2 (portswitch)")],
+            self)
+        if values:
+            self.apply_commands(translator.interface_portswitch(
+                row["name"], to_layer2="L2" in values["mode"]))
+
+    def _loopback(self):
+        values = SimpleForm.ask(
+            "Criar interface Loopback",
+            [("id", "Número do LoopBack", "int", 0),
+             ("ip", "Endereço IP (opcional)", "text", ""),
+             ("mask", "Máscara (opcional)", "text", "")],
+            self)
+        if values is not None:
+            self.apply_commands(translator.interface_loopback_create(
+                values["id"], values["ip"], values["mask"]))
+
+    def _eth_trunk(self):
+        values = SimpleForm.ask(
+            "Eth-Trunk (LAG)",
+            [("action", "Ação", "choice:Criar Trunk|Adicionar membro|Remover membro|Apagar Trunk", "Criar Trunk"),
+             ("trunk_id", "ID do Eth-Trunk", "int", 1),
+             ("mode", "Modo (só para Criar)", "choice:lacp-static|lacp-dynamic|manual", "lacp-static"),
+             ("interface", "Interface membro (para Adicionar/Remover)", "text", "")],
+            self)
+        if not values:
+            return
+        action = values["action"]
+        tid = values["trunk_id"]
+        if action == "Criar Trunk":
+            self.apply_commands(translator.eth_trunk_create(tid, values["mode"]))
+        elif action == "Apagar Trunk":
+            self.apply_commands(translator.eth_trunk_delete(tid))
+        elif action == "Adicionar membro" and values["interface"]:
+            self.apply_commands(translator.eth_trunk_add_member(
+                values["interface"], tid))
+        elif action == "Remover membro" and values["interface"]:
+            self.apply_commands(translator.eth_trunk_add_member(
+                values["interface"], tid, remove=True))
+
+    def _subinterface(self):
+        values = SimpleForm.ask(
+            "Sub-interface Dot1Q",
+            [("interface", "Interface (ex.: GigabitEthernet0/0/1.10)", "text", ""),
+             ("vlan_id", "VLAN ID", "int", 10),
+             ("remove", "Remover sub-interface", "bool", False)],
+            self)
+        if values and values["interface"]:
+            self.apply_commands(translator.subinterface_dot1q_simple(
+                values["interface"], values["vlan_id"],
+                remove=values["remove"]))
 
     def _show_detail(self):
         row = self._need_selection()

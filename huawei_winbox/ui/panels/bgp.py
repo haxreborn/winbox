@@ -23,9 +23,16 @@ class BgpPanel(BasePanel):
         for text, slot in [
             ("Habilitar BGP...", self._enable_bgp),
             ("Novo vizinho...", self._add_peer),
+            ("Vizinho IPv6...", self._add_peer_ipv6),
+            ("Grupo de peers...", self._peer_group),
             ("Anunciar rede...", self._add_network),
             ("Desabilitar peer", self._disable_peer),
             ("Habilitar peer", self._enable_peer),
+            ("Soft Reset...", self._soft_reset),
+            ("Route-Policy...", self._route_policy),
+            ("BFD no peer...", self._bfd_peer),
+            ("Community...", self._community),
+            ("Keepalive/Hold...", self._keepalive),
         ]:
             btn = QPushButton(text)
             btn.clicked.connect(slot)
@@ -36,16 +43,12 @@ class BgpPanel(BasePanel):
         layout.addWidget(del_btn)
 
     def fetch(self):
-        # Família IPv4 — a família de cada linha vem do próprio endereço
-        # do peer (parse_bgp_peers), nunca do comando que gerou a saída.
         text4 = self.session.run("display bgp peer")
         info = parsers.parse_bgp_local(text4)
         self.local_as = int(info["local_as"] or 0)
         rows = parsers.parse_bgp_peers(text4)
         seen = {r["peer"] for r in rows}
 
-        # Família IPv6 (comando separado; falha silenciosa se não configurado).
-        # Peers que já apareceram no comando IPv4 não são duplicados.
         try:
             text6 = self.session.run("display bgp ipv6 peer")
             rows += [r for r in parsers.parse_bgp_peers(text6)
@@ -67,12 +70,7 @@ class BgpPanel(BasePanel):
             for c, value in enumerate(self.row_values(row)):
                 item = QTableWidgetItem(str(value))
                 item.setData(Qt.UserRole, row)
-                # Ignora (disabled) peers em cinza
-                if row.get("state", "").lower() in ("idle", "idle(admin)"):
-                    for col in range(self.table.columnCount()):
-                        pass  # colored below
                 self.table.setItem(r, c, item)
-            # Cor por estado
             state = row.get("state", "").lower()
             if "established" in state:
                 color = Qt.darkGreen
@@ -116,7 +114,7 @@ class BgpPanel(BasePanel):
 
     def _add_peer(self):
         values = SimpleForm.ask(
-            "Novo vizinho BGP",
+            "Novo vizinho BGP (IPv4)",
             [("local_as", "AS local", "int", self.local_as or 65000),
              ("peer_ip", "IP do vizinho", "text", ""),
              ("remote_as", "AS remoto", "int", 65001),
@@ -129,6 +127,44 @@ class BgpPanel(BasePanel):
                     local_as, values["peer_ip"], values["remote_as"],
                     values["description"]))
 
+    def _add_peer_ipv6(self):
+        values = SimpleForm.ask(
+            "Novo vizinho BGP IPv6",
+            [("local_as", "AS local", "int", self.local_as or 65000),
+             ("peer_ip", "Endereço IPv6 do vizinho", "text", ""),
+             ("remote_as", "AS remoto", "int", 65001),
+             ("description", "Descrição (opcional)", "text", "")],
+            self)
+        if values and values["peer_ip"]:
+            local_as = self._require_as(values)
+            if local_as:
+                self.apply_commands(translator.bgp_ipv6_peer(
+                    local_as, values["peer_ip"], values["remote_as"],
+                    description=values["description"]))
+
+    def _peer_group(self):
+        values = SimpleForm.ask(
+            "Grupo de Peers BGP",
+            [("local_as", "AS local", "int", self.local_as or 65000),
+             ("group_name", "Nome do grupo", "text", ""),
+             ("remote_as", "AS remoto do grupo (0 = iBGP)", "int", 0),
+             ("peer_ip", "Adicionar peer ao grupo (IP, opcional)", "text", ""),
+             ("remove", "Remover grupo", "bool", False)],
+            self)
+        if not values or not values["group_name"]:
+            return
+        local_as = self._require_as(values)
+        if not local_as:
+            return
+        cmds = translator.bgp_peer_group(
+            local_as, values["group_name"],
+            remote_as=values["remote_as"] or None,
+            remove=values["remove"])
+        if values["peer_ip"] and not values["remove"]:
+            cmds += translator.bgp_peer_to_group(
+                local_as, values["peer_ip"], values["group_name"])
+        self.apply_commands(cmds)
+
     def _remove_peer(self):
         row = self.selected_row()
         if not row:
@@ -140,7 +176,6 @@ class BgpPanel(BasePanel):
                 local_as, row["peer"], 0, remove=True))
 
     def _disable_peer(self):
-        """Desabilita (ignore) o peer sem removê-lo."""
         row = self.selected_row()
         if not row:
             QMessageBox.information(self, self.title, "Selecione um vizinho.")
@@ -151,7 +186,6 @@ class BgpPanel(BasePanel):
                 local_as, row["peer"], ignore=True))
 
     def _enable_peer(self):
-        """Reabilita um peer que estava com ignore."""
         row = self.selected_row()
         if not row:
             QMessageBox.information(self, self.title, "Selecione um vizinho.")
@@ -173,3 +207,91 @@ class BgpPanel(BasePanel):
             if local_as:
                 self.apply_commands(translator.bgp_network(
                     local_as, values["network"], values["mask"]))
+
+    def _soft_reset(self):
+        row = self.selected_row()
+        peer_ip = row["peer"] if row else ""
+        values = SimpleForm.ask(
+            "BGP Soft Reset",
+            [("local_as", "AS local", "int", self.local_as or 65000),
+             ("peer_ip", "IP do peer (vazio = todos)", "text", peer_ip),
+             ("direction", "Direção", "choice:both|import|export", "both")],
+            self)
+        if values:
+            local_as = self._require_as(values)
+            if local_as:
+                self.apply_commands(
+                    translator.bgp_soft_reset(
+                        local_as, values["peer_ip"], values["direction"]),
+                    system_view=False)
+
+    def _route_policy(self):
+        row = self.selected_row()
+        peer_ip = row["peer"] if row else ""
+        values = SimpleForm.ask(
+            "Aplicar Route-Policy no peer",
+            [("local_as", "AS local", "int", self.local_as or 65000),
+             ("peer_ip", "IP do peer", "text", peer_ip),
+             ("policy_name", "Nome da route-policy", "text", ""),
+             ("direction", "Direção", "choice:import|export", "import"),
+             ("remove", "Remover policy", "bool", False)],
+            self)
+        if values and values["peer_ip"] and values["policy_name"]:
+            local_as = self._require_as(values)
+            if local_as:
+                self.apply_commands(translator.bgp_route_policy(
+                    local_as, values["peer_ip"], values["policy_name"],
+                    values["direction"], remove=values["remove"]))
+
+    def _bfd_peer(self):
+        row = self.selected_row()
+        peer_ip = row["peer"] if row else ""
+        values = SimpleForm.ask(
+            "BFD no vizinho BGP",
+            [("local_as", "AS local", "int", self.local_as or 65000),
+             ("peer_ip", "IP do peer", "text", peer_ip),
+             ("min_tx", "Intervalo TX mínimo (ms)", "int", 1000),
+             ("min_rx", "Intervalo RX mínimo (ms)", "int", 1000),
+             ("multiplier", "Multiplicador de detecção", "int", 3),
+             ("remove", "Remover BFD", "bool", False)],
+            self)
+        if values and values["peer_ip"]:
+            local_as = self._require_as(values)
+            if local_as:
+                self.apply_commands(translator.bgp_bfd(
+                    local_as, values["peer_ip"],
+                    values["min_tx"], values["min_rx"], values["multiplier"],
+                    remove=values["remove"]))
+
+    def _community(self):
+        row = self.selected_row()
+        peer_ip = row["peer"] if row else ""
+        values = SimpleForm.ask(
+            "Configurar Community no peer",
+            [("local_as", "AS local", "int", self.local_as or 65000),
+             ("peer_ip", "IP do peer", "text", peer_ip),
+             ("send_community",
+              "Enviar community",
+              "choice:standard|extended|both",
+              "both"),
+             ("remove", "Remover configuração", "bool", False)],
+            self)
+        if values and values["peer_ip"]:
+            local_as = self._require_as(values)
+            if local_as:
+                self.apply_commands(translator.bgp_community(
+                    local_as, values["peer_ip"], values["send_community"],
+                    remove=values["remove"]))
+
+    def _keepalive(self):
+        values = SimpleForm.ask(
+            "Temporizadores BGP",
+            [("local_as", "AS local", "int", self.local_as or 65000),
+             ("keepalive", "Keepalive (s)", "int", 60),
+             ("hold_time", "Hold Time (s)", "int", 180)],
+            self)
+        if values:
+            local_as = self._require_as(values)
+            if local_as:
+                self.apply_commands(translator.bgp_keepalive(
+                    local_as, values["keepalive"], values["hold_time"]))
