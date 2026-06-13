@@ -61,9 +61,7 @@ class _TerminalView(QPlainTextEdit):
         self.setReadOnly(True)   # apenas o canal SSH "escreve" aqui
         self.setMaximumBlockCount(5000)
         self._chan = None
-        self._history: list[str] = []
-        self._hist_pos = 0
-        self._typed: str = ""    # buffer local do que o usuário está digitando
+        self._typed: str = ""    # buffer local: só o que está na linha atual
 
     def attach(self, chan) -> None:
         self._chan = chan
@@ -131,13 +129,7 @@ class _TerminalView(QPlainTextEdit):
             return
 
         # ── Enter ───────────────────────────────────────────────────────
-        # Cada caractere já foi enviado ao equipamento quando foi digitado;
-        # aqui vai SOMENTE o \n (reenviar o comando inteiro duplicaria tudo).
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            cmd = self._typed
-            if cmd.strip():
-                self._history.append(cmd)
-            self._hist_pos = len(self._history)
             self._typed = ""
             self._send("\n")
             return
@@ -161,21 +153,19 @@ class _TerminalView(QPlainTextEdit):
                 self._send("\x08")
             return
 
-        # ── ↑ histórico ─────────────────────────────────────────────────
+        # ── ↑ / ↓ histórico ─────────────────────────────────────────────
+        # Encaminha diretamente para o VRP como sequências ANSI — o
+        # próprio equipamento gerencia o histórico (persiste entre
+        # sessões, inclui comandos de outras conexões). Ao navegar, não
+        # sabemos o que o VRP colocou na linha, então zeramos _typed para
+        # o Backspace não achar que a linha está vazia antes do prompt.
         if key == Qt.Key.Key_Up:
-            if self._history and self._hist_pos > 0:
-                self._hist_pos -= 1
-                self._replace_typed(self._history[self._hist_pos])
+            self._typed = ""
+            self._send("\x1b[A")
             return
-
-        # ── ↓ histórico ─────────────────────────────────────────────────
         if key == Qt.Key.Key_Down:
-            if self._hist_pos < len(self._history) - 1:
-                self._hist_pos += 1
-                self._replace_typed(self._history[self._hist_pos])
-            else:
-                self._hist_pos = len(self._history)
-                self._replace_typed("")
+            self._typed = ""
+            self._send("\x1b[B")
             return
 
         # ── Tab: autocomplete do VRP ────────────────────────────────────
@@ -218,12 +208,6 @@ class _TerminalView(QPlainTextEdit):
         except Exception:
             pass
 
-    def _replace_typed(self, new_text: str) -> None:
-        """Substitui o texto digitado: Ctrl+U limpa a linha, depois re-digita."""
-        self._send("\x15")          # Ctrl+U — limpa linha atual no VRP VTY
-        self._typed = new_text
-        if new_text:
-            self._send(new_text)
 
 
 class TerminalPanel(QWidget):
