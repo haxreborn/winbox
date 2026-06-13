@@ -103,7 +103,7 @@ class InterfaceDetailDialog(QDialog):
 
 class InterfacesPanel(BasePanel):
     title = "Interfaces"
-    columns = ["Interface", "Físico", "Protocolo", "Descrição"]
+    columns = ["Interface", "Físico", "Protocolo", "RX", "TX", "Descrição"]
 
     def __init__(self, session, parent=None):
         super().__init__(session, parent)
@@ -124,11 +124,25 @@ class InterfacesPanel(BasePanel):
             layout.addWidget(btn)
 
     def fetch(self):
-        return parsers.parse_interface_description(
+        rows = parsers.parse_interface_description(
             self.session.run("display interface description"))
+        # RX/TX: utilização real de banda vinda do "display interface
+        # brief" (colunas InUti/OutUti), casada por nome de interface.
+        try:
+            brief = parsers.parse_interface_brief(
+                self.session.run("display interface brief"))
+            util = {b["name"]: (b["in_util"], b["out_util"]) for b in brief}
+        except Exception:
+            util = {}
+        for r in rows:
+            rx, tx = util.get(r["name"], ("", ""))
+            r["rx"] = rx
+            r["tx"] = tx
+        return rows
 
     def row_values(self, row):
-        return [row["name"], row["phy"], row["protocol"], row["description"]]
+        return [row["name"], row["phy"], row["protocol"],
+                row.get("rx", ""), row.get("tx", ""), row["description"]]
 
     def _on_rows(self, rows):
         super()._on_rows(rows)

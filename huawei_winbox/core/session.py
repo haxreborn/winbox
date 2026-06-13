@@ -192,7 +192,11 @@ class HuaweiSession:
         timeout informado.
         """
         t = timeout or self.timeout
-        buf = ""
+        # Acumula em lista (join no final): com saídas gigantes (tabela
+        # BGP completa) o "buf += chunk" e o regex sobre o buffer inteiro
+        # a cada iteração ficavam O(n²) e travavam o app por minutos.
+        # A detecção de prompt/More/confirm só precisa do FIM da saída.
+        parts: list[str] = []
         deadline = time.time() + t
         while time.time() < deadline:
             try:
@@ -200,11 +204,12 @@ class HuaweiSession:
             except socket.timeout:
                 chunk = b""
             if chunk:
-                buf += chunk.decode("utf-8", errors="replace")
+                parts.append(chunk.decode("utf-8", errors="replace"))
                 deadline = time.time() + t   # recebeu dados → reseta prazo
 
-            # Trabalha sobre a versão sem ANSI para detecção de padrões.
-            tail = _ANSI_RE.sub("", buf).rstrip()
+            # Só o final interessa para detectar prompt/More/confirmação.
+            tail_src = "".join(parts[-4:])[-4096:]
+            tail = _ANSI_RE.sub("", tail_src).rstrip()
             lines = tail.splitlines() if tail else [""]
             last = lines[-1]
 
@@ -239,11 +244,11 @@ class HuaweiSession:
                         # Visão de sistema antes de conhecermos o sysname:
                         # usa o nome inteiro até aparecer um prompt <name>.
                         self.hostname = raw_name
-                return buf
+                return "".join(parts)
 
             time.sleep(0.02)
 
-        tail = _ANSI_RE.sub("", buf).strip()
+        tail = _ANSI_RE.sub("", "".join(parts)[-1000:]).strip()
         extra = (f"\n\nÚltima resposta parcial do equipamento:\n"
                  f"{tail[-400:]}" if tail else
                  " Verifique a conectividade e tente novamente.")

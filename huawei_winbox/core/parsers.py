@@ -30,7 +30,7 @@ def parse_interface_brief(text: str) -> list[dict]:
         if not m:
             continue
         rows.append({
-            "name": m.group(1),
+            "name": expand_iface_name(m.group(1)),
             "phy": m.group(2),
             "protocol": m.group(3),
             "in_util": m.group(4) or "",
