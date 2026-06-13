@@ -25,75 +25,118 @@ from .base import BasePanel
 
 # ─── Utilitário: parser de tabela de rotas VRP ─────────────────────────── #
 
+_FLAG_CHARS = frozenset("*>idshSe? ")
+
+
 def _is_ip_prefix(s: str) -> bool:
-    """True se s parece um prefixo IPv4 ou IPv6."""
+    """True se s parece um prefixo IPv4 ou IPv6 (com ou sem /len)."""
     if re.match(r"^\d{1,3}(\.\d{1,3}){3}(/\d{1,2})?$", s):
         return True
-    if ":" in s and re.match(r"^[0-9a-fA-F:/.]+$", s):
+    if ":" in s and re.match(r"^[0-9a-fA-F:]{2,}(/\d{1,3})?$", s):
         return True
     return False
 
 
 def _parse_bgp_route_table(text: str) -> tuple[list[dict], int]:
-    """Converte a saída de 'display bgp [ipv6] routing-table peer X …' em linhas.
+    """Converte saída de 'display bgp [ipv6] routing-table peer X …' em linhas.
 
-    Retorna (lista_de_rotas, total_declarado).
-    Valida que o campo de rede é um prefixo IP para não capturar
-    linhas da legenda (ex.: 'h - history, i - internal').
+    Usa tokenização por whitespace para ser robusto a variações de
+    alinhamento entre versões VRP.  Valida que o primeiro token de dados
+    é um prefixo IP para excluir linhas de legenda/cabeçalho.
     """
     total_m = re.search(r"Total Number of Routes:\s*(\d+)", text)
     total = int(total_m.group(1)) if total_m else 0
 
-    # Flags: combinação de * > i d s S h e ?
-    route_re = re.compile(
-        r"^\s*([*>idshSe? ]{0,6})"   # flags (pode estar vazio)
-        r"\s*(\S+)"                    # rede/prefixo
-        r"\s+(\S+)"                    # nexthop
-        r"\s+(\S+)"                    # MED
-        r"\s+(\S+)"                    # LocPrf
-        r"\s+(\S+)"                    # PrefVal
-        r"\s+(.+?)\s*$"               # Path/Ogn
-    )
     routes = []
-    for line in text.splitlines():
-        m = route_re.match(line)
-        if not m:
+    for raw_line in text.splitlines():
+        line = raw_line.lstrip()
+        if not line:
             continue
-        net = m.group(2)
+
+        # Consome caracteres de flag no início (até 6)
+        fi = 0
+        while fi < len(line) and fi < 6 and line[fi] in _FLAG_CHARS:
+            fi += 1
+        flags = line[:fi].strip()
+        tokens = line[fi:].split()
+
+        if not tokens:
+            continue
+
+        # Primeiro token deve ser um prefixo IP
+        net = tokens[0]
         if not _is_ip_prefix(net):
-            continue   # filtra linhas da legenda/cabeçalho
+            continue
+
+        nexthop = tokens[1] if len(tokens) > 1 else ""
+        med     = tokens[2] if len(tokens) > 2 else ""
+        locprf  = tokens[3] if len(tokens) > 3 else ""
+        # prefval em [4], path/ogn em [5:]
+        path    = " ".join(tokens[5:]) if len(tokens) > 5 else (
+                  tokens[4] if len(tokens) > 4 else "")
+
         routes.append({
-            "flags":   m.group(1).strip(),
+            "flags":   flags,
             "network": net,
-            "nexthop": m.group(3),
-            "med":     m.group(4),
-            "locprf":  m.group(5),
-            "path":    m.group(7).strip(),
+            "nexthop": nexthop,
+            "med":     med,
+            "locprf":  locprf,
+            "path":    path,
         })
     return routes, total or len(routes)
 
 
 def _parse_peer_verbose(text: str) -> dict:
-    """Extrai campos relevantes de 'display bgp peer X verbose'."""
-    def find(pattern: str, default: str = "—") -> str:
-        m = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-        return m.group(1).strip() if m else default
+    """Extrai campos relevantes de 'display bgp peer X verbose'.
+
+    Cobre múltiplos formatos VRP (CE, NE, ATN, S-series).
+    """
+    def find(*patterns: str, default: str = "—") -> str:
+        for pat in patterns:
+            m = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
+            if m:
+                return m.group(1).strip()
+        return default
 
     return {
-        "type":       find(r"Type:\s+(.+)"),
-        "router_id":  find(r"remote router ID\s+(\S+)"),
-        "state":      find(r"BGP current state:\s+(\S+)"),
-        "hold_cfg":   find(r"Configured: Active Hold Time:\s+(\d+\s*Sec)"),
-        "keep_cfg":   find(r"Keepalive Time:\s+(\d+\s*Sec)"),
-        "bfd":        find(r"BFD:\s+(\S+)"),
-        "community":  find(r"Configured Send Community:\s+(\S+)"),
-        "pol_import": find(r"Policy for receiving routing:\s*(.+)"),
-        "pol_export": find(r"Policy for sending routing:\s*(.+)"),
-        "rcv_active": find(r"Number of received active routes:\s*(\d+)"),
-        "accepted":   find(r"Number of accepted routes:\s*(\d+)"),
-        "sent":       find(r"Number of sent routes:\s*(\d+)"),
-        "conn_iface": find(r"Connect-interface:\s*(\S+)"),
-        "update_grp": find(r"Update-group ID:\s*(\d+)"),
+        "type": find(r"Type:\s+(.+?)\s*$"),
+        "router_id": find(r"remote router ID[:\s]+(\S+)"),
+        "state": find(r"BGP current state:\s+(\S[^\n,]*)"),
+        "hold_cfg": find(
+            r"Configured:\s*Active Hold Time:\s*(\d+\s*Sec)",
+            r"Hold Time[:\s]+(\d+\s*[Ss]ec(?:onds)?)"),
+        "keep_cfg": find(
+            r"Keepalive Time[:\s]+(\d+\s*[Ss]ec(?:onds)?)"),
+        "bfd": find(
+            r"BFD[:\s]+(\S+)",
+            r"Peer.s BFD state[:\s]+(\S+)"),
+        "community": find(
+            r"Configured Send Community[:\s]+(\S+)",
+            r"Send Community[:\s]+(\S+)"),
+        "pol_import": find(
+            r"Policy for receiving routing[:\s]+(.+?)\s*$",
+            r"Route Policy for receiving[:\s]+(.+?)\s*$",
+            r"Import route-policy[:\s]+(.+?)\s*$"),
+        "pol_export": find(
+            r"Policy for sending routing[:\s]+(.+?)\s*$",
+            r"Route Policy for sending[:\s]+(.+?)\s*$",
+            r"Export route-policy[:\s]+(.+?)\s*$"),
+        "rcv_active": find(
+            r"Number of received active routes[:\s]+(\d+)",
+            r"Received active routes total[:\s]+(\d+)",
+            r"Active routes[:\s]+(\d+)"),
+        "accepted": find(
+            r"Number of accepted routes[:\s]+(\d+)",
+            r"Received routes valid[:\s]+(\d+)",
+            r"Accepted routes[:\s]+(\d+)"),
+        "sent": find(
+            r"Number of sent routes[:\s]+(\d+)",
+            r"Routes sent[:\s]+(\d+)",
+            r"Advertised routes[:\s]+(\d+)"),
+        "conn_iface": find(
+            r"Connect-interface:\s*(\S+)(?!\s+has)"),
+        "update_grp": find(
+            r"Update-group ID[:\s]+(\d+)"),
     }
 
 
@@ -284,20 +327,21 @@ class BgpPeerDetailDialog(QDialog):
                     item.widget().deleteLater()
             labels = [
                 ("Tipo de sessão",         info["type"]),
-                ("Router ID remoto",        info["router_id"]),
-                ("Estado atual",           info["state"]),
-                ("Hold Time configurado",  info["hold_cfg"]),
-                ("Keepalive configurado",  info["keep_cfg"]),
-                ("BFD",                    info["bfd"]),
-                ("Community enviada",      info["community"]),
-                ("Route-Policy de import", info["pol_import"]),
-                ("Route-Policy de export", info["pol_export"]),
-                ("Rotas recebidas ativas", info["rcv_active"]),
-                ("Rotas aceitas",          info["accepted"]),
-                ("Rotas enviadas",         info["sent"]),
-                ("Interface de conexão",   info["conn_iface"]),
-                ("Update Group ID",        info["update_grp"]),
+                ("Router ID remoto",       info["router_id"]),
+                ("Estado atual",          info["state"]),
+                ("Hold Time",             info["hold_cfg"]),
+                ("Keepalive",             info["keep_cfg"]),
+                ("BFD",                   info["bfd"]),
+                ("Community enviada",     info["community"]),
+                ("Route-Policy import",   info["pol_import"]),
+                ("Route-Policy export",   info["pol_export"]),
+                ("Rotas recebidas ativas",info["rcv_active"]),
+                ("Rotas aceitas",         info["accepted"]),
+                ("Rotas enviadas",        info["sent"]),
+                ("Interface de conexão",  info["conn_iface"]),
+                ("Update Group ID",       info["update_grp"]),
             ]
+            found = sum(1 for _, v in labels if v != "—")
             for i, (lbl_text, val_text) in enumerate(labels):
                 col, ri = (i % 2) * 2, i // 2
                 lbl = QLabel(f"<b>{lbl_text}:</b>")
@@ -305,7 +349,21 @@ class BgpPeerDetailDialog(QDialog):
                 val.setTextInteractionFlags(Qt.TextSelectableByMouse)
                 self._cfg_grid.addWidget(lbl, ri, col)
                 self._cfg_grid.addWidget(val, ri, col + 1)
-            self._cfg_status.setText("Configuração carregada.")
+            if found == 0 and text.strip():
+                # Nenhum padrão reconhecido — mostra os primeiros 600 chars
+                # para diagnóstico
+                raw_lbl = QLabel(
+                    "<b>Saída do equipamento (formato não reconhecido):</b>")
+                self._cfg_grid.addWidget(raw_lbl, len(labels) // 2 + 1, 0, 1, 4)
+                from PySide6.QtWidgets import QPlainTextEdit
+                raw_edit = QPlainTextEdit(text[:600])
+                raw_edit.setObjectName("terminal")
+                raw_edit.setReadOnly(True)
+                raw_edit.setMaximumHeight(120)
+                self._cfg_grid.addWidget(
+                    raw_edit, len(labels) // 2 + 2, 0, 1, 4)
+            self._cfg_status.setText(
+                f"Configuração carregada ({found} campo(s) identificado(s)).")
 
         def err(msg: str):
             self._cfg_load_btn.setEnabled(True)
