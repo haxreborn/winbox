@@ -25,37 +25,76 @@ from .base import BasePanel
 
 # ─── Utilitário: parser de tabela de rotas VRP ─────────────────────────── #
 
+def _is_ip_prefix(s: str) -> bool:
+    """True se s parece um prefixo IPv4 ou IPv6."""
+    if re.match(r"^\d{1,3}(\.\d{1,3}){3}(/\d{1,2})?$", s):
+        return True
+    if ":" in s and re.match(r"^[0-9a-fA-F:/.]+$", s):
+        return True
+    return False
+
+
 def _parse_bgp_route_table(text: str) -> tuple[list[dict], int]:
-    """Converte a saída de 'display bgp routing-table peer X …' em linhas.
+    """Converte a saída de 'display bgp [ipv6] routing-table peer X …' em linhas.
 
     Retorna (lista_de_rotas, total_declarado).
-    Cada rota: flags, network, nexthop, med, locprf, path.
+    Valida que o campo de rede é um prefixo IP para não capturar
+    linhas da legenda (ex.: 'h - history, i - internal').
     """
     total_m = re.search(r"Total Number of Routes:\s*(\d+)", text)
     total = int(total_m.group(1)) if total_m else 0
 
+    # Flags: combinação de * > i d s S h e ?
     route_re = re.compile(
-        r"^\s*([*>dishSi ]{1,4})\s+"   # flags
-        r"(\S+)\s+"                      # network/prefix
-        r"(\S+)\s+"                      # nexthop
-        r"(\S*)\s+"                      # MED
-        r"(\S*)\s+"                      # LocPrf
-        r"(\S*)\s+"                      # PrefVal
-        r"(.+?)\s*$"                     # Path/Ogn
+        r"^\s*([*>idshSe? ]{0,6})"   # flags (pode estar vazio)
+        r"\s*(\S+)"                    # rede/prefixo
+        r"\s+(\S+)"                    # nexthop
+        r"\s+(\S+)"                    # MED
+        r"\s+(\S+)"                    # LocPrf
+        r"\s+(\S+)"                    # PrefVal
+        r"\s+(.+?)\s*$"               # Path/Ogn
     )
     routes = []
     for line in text.splitlines():
         m = route_re.match(line)
-        if m:
-            routes.append({
-                "flags":   m.group(1).strip(),
-                "network": m.group(2),
-                "nexthop": m.group(3),
-                "med":     m.group(4),
-                "locprf":  m.group(5),
-                "path":    m.group(7).strip(),
-            })
+        if not m:
+            continue
+        net = m.group(2)
+        if not _is_ip_prefix(net):
+            continue   # filtra linhas da legenda/cabeçalho
+        routes.append({
+            "flags":   m.group(1).strip(),
+            "network": net,
+            "nexthop": m.group(3),
+            "med":     m.group(4),
+            "locprf":  m.group(5),
+            "path":    m.group(7).strip(),
+        })
     return routes, total or len(routes)
+
+
+def _parse_peer_verbose(text: str) -> dict:
+    """Extrai campos relevantes de 'display bgp peer X verbose'."""
+    def find(pattern: str, default: str = "—") -> str:
+        m = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+        return m.group(1).strip() if m else default
+
+    return {
+        "type":       find(r"Type:\s+(.+)"),
+        "router_id":  find(r"remote router ID\s+(\S+)"),
+        "state":      find(r"BGP current state:\s+(\S+)"),
+        "hold_cfg":   find(r"Configured: Active Hold Time:\s+(\d+\s*Sec)"),
+        "keep_cfg":   find(r"Keepalive Time:\s+(\d+\s*Sec)"),
+        "bfd":        find(r"BFD:\s+(\S+)"),
+        "community":  find(r"Configured Send Community:\s+(\S+)"),
+        "pol_import": find(r"Policy for receiving routing:\s*(.+)"),
+        "pol_export": find(r"Policy for sending routing:\s*(.+)"),
+        "rcv_active": find(r"Number of received active routes:\s*(\d+)"),
+        "accepted":   find(r"Number of accepted routes:\s*(\d+)"),
+        "sent":       find(r"Number of sent routes:\s*(\d+)"),
+        "conn_iface": find(r"Connect-interface:\s*(\S+)"),
+        "update_grp": find(r"Update-group ID:\s*(\d+)"),
+    }
 
 
 def _fill_route_table(table: QTableWidget, routes: list[dict], total: int,
@@ -92,76 +131,65 @@ class BgpPeerDetailDialog(QDialog):
         self._session = session
         self._local_as = local_as
         self._peer_ip = row["peer"]
-        self._is_ipv6 = "6" in row.get("family", "IPv4")
+        self._is_ipv6 = ":" in row.get("peer", "")
 
         self.setWindowTitle(f"Peer BGP — {self._peer_ip}")
-        self.resize(900, 640)
+        self.resize(940, 700)
 
         root = QVBoxLayout(self)
 
-        # ── Scroll para caber em telas menores ── #
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        content = QWidget()
-        scroll.setWidget(content)
-        root.addWidget(scroll)
-        vbox = QVBoxLayout(content)
-        vbox.setSpacing(8)
+        # ── Tabs principais ── #
+        tabs = QTabWidget()
+        root.addWidget(tabs)
 
-        # ── Informações do peer ── #
-        info_grp = QGroupBox("Informações do Vizinho")
-        info_grid = QGridLayout(info_grp)
+        # ── Tab 1: Informações + configuração ── #
+        info_tab = QWidget()
+        info_scroll = QScrollArea()
+        info_scroll.setWidgetResizable(True)
+        info_scroll.setWidget(info_tab)
+        info_vbox = QVBoxLayout(info_tab)
+        info_vbox.setSpacing(8)
+        tabs.addTab(info_scroll, "Visão Geral")
+
+        # Informações básicas (da tabela)
         state = row.get("state", "")
         cor = "#2e8b57" if "established" in state.lower() else "#c0392b"
-        pairs = [
-            ("IP do Vizinho",    self._peer_ip),
-            ("AS Remoto",        row.get("as", "—")),
-            ("Família",          row.get("family", "IPv4")),
+        basic_grp = QGroupBox("Informações do Vizinho")
+        basic_grid = QGridLayout(basic_grp)
+        basic_pairs = [
+            ("IP do Vizinho",       self._peer_ip),
+            ("AS Remoto",           row.get("as", "—")),
+            ("Família",             row.get("family", "IPv4")),
             ("Estado",
              f'<span style="color:{cor};font-weight:bold">{state or "—"}</span>'),
-            ("Tempo Ativo",      row.get("up_down", "—")),
-            ("Prefixos Recebidos", row.get("prefrcv", "—")),
+            ("Tempo Ativo",         row.get("up_down", "—")),
+            ("Prefixos Recebidos",  row.get("prefrcv", "—")),
         ]
-        for i, (label, value) in enumerate(pairs):
+        for i, (label, value) in enumerate(basic_pairs):
             col, row_i = (i % 2) * 2, i // 2
             lbl = QLabel(f"<b>{label}:</b>")
             val = QLabel(value)
             val.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            info_grid.addWidget(lbl, row_i, col)
-            info_grid.addWidget(val, row_i, col + 1)
-        vbox.addWidget(info_grp)
+            basic_grid.addWidget(lbl, row_i, col)
+            basic_grid.addWidget(val, row_i, col + 1)
+        info_vbox.addWidget(basic_grp)
 
-        # ── Rotas Anunciadas ── #
-        adv_grp = QGroupBox("Rotas Anunciadas para este Peer")
-        adv_layout = QVBoxLayout(adv_grp)
-        adv_bar = QHBoxLayout()
-        self._adv_load_btn = QPushButton("Carregar Rotas Anunciadas")
-        self._adv_load_btn.clicked.connect(self._load_advertised)
-        self._adv_status = QLabel("Clique em 'Carregar' para consultar.")
-        adv_bar.addWidget(self._adv_load_btn)
-        adv_bar.addWidget(self._adv_status)
-        adv_bar.addStretch(1)
-        adv_layout.addLayout(adv_bar)
-        self._adv_table = self._make_route_table()
-        adv_layout.addWidget(self._adv_table)
-        vbox.addWidget(adv_grp)
+        # Configuração detalhada (carregada via verbose)
+        cfg_grp = QGroupBox("Configuração Detalhada do Peer")
+        cfg_layout = QVBoxLayout(cfg_grp)
+        cfg_bar = QHBoxLayout()
+        self._cfg_load_btn = QPushButton("Carregar Configuração")
+        self._cfg_load_btn.clicked.connect(self._load_config)
+        self._cfg_status = QLabel("Clique em 'Carregar Configuração'.")
+        cfg_bar.addWidget(self._cfg_load_btn)
+        cfg_bar.addWidget(self._cfg_status)
+        cfg_bar.addStretch(1)
+        cfg_layout.addLayout(cfg_bar)
+        self._cfg_grid = QGridLayout()
+        cfg_layout.addLayout(self._cfg_grid)
+        info_vbox.addWidget(cfg_grp)
 
-        # ── Rotas Recebidas ── #
-        rcv_grp = QGroupBox("Rotas Recebidas deste Peer")
-        rcv_layout = QVBoxLayout(rcv_grp)
-        rcv_bar = QHBoxLayout()
-        self._rcv_load_btn = QPushButton("Carregar Rotas Recebidas")
-        self._rcv_load_btn.clicked.connect(self._load_received)
-        self._rcv_status = QLabel("Clique em 'Carregar' para consultar.")
-        rcv_bar.addWidget(self._rcv_load_btn)
-        rcv_bar.addWidget(self._rcv_status)
-        rcv_bar.addStretch(1)
-        rcv_layout.addLayout(rcv_bar)
-        self._rcv_table = self._make_route_table()
-        rcv_layout.addWidget(self._rcv_table)
-        vbox.addWidget(rcv_grp)
-
-        # ── Ações rápidas ── #
+        # Ações rápidas
         act_grp = QGroupBox("Ações Rápidas")
         act_bar = QHBoxLayout(act_grp)
         for text, slot in [
@@ -173,7 +201,38 @@ class BgpPeerDetailDialog(QDialog):
             btn.clicked.connect(slot)
             act_bar.addWidget(btn)
         act_bar.addStretch(1)
-        vbox.addWidget(act_grp)
+        info_vbox.addWidget(act_grp)
+        info_vbox.addStretch(1)
+
+        # ── Tab 2: Rotas Anunciadas ── #
+        adv_tab = QWidget()
+        adv_layout = QVBoxLayout(adv_tab)
+        adv_bar = QHBoxLayout()
+        self._adv_load_btn = QPushButton("Carregar Rotas Anunciadas")
+        self._adv_load_btn.clicked.connect(self._load_advertised)
+        self._adv_status = QLabel("Clique para consultar o equipamento.")
+        adv_bar.addWidget(self._adv_load_btn)
+        adv_bar.addWidget(self._adv_status)
+        adv_bar.addStretch(1)
+        adv_layout.addLayout(adv_bar)
+        self._adv_table = self._make_route_table()
+        adv_layout.addWidget(self._adv_table)
+        tabs.addTab(adv_tab, "Rotas Anunciadas")
+
+        # ── Tab 3: Rotas Recebidas ── #
+        rcv_tab = QWidget()
+        rcv_layout = QVBoxLayout(rcv_tab)
+        rcv_bar = QHBoxLayout()
+        self._rcv_load_btn = QPushButton("Carregar Rotas Recebidas")
+        self._rcv_load_btn.clicked.connect(self._load_received)
+        self._rcv_status = QLabel("Clique para consultar o equipamento.")
+        rcv_bar.addWidget(self._rcv_load_btn)
+        rcv_bar.addWidget(self._rcv_status)
+        rcv_bar.addStretch(1)
+        rcv_layout.addLayout(rcv_bar)
+        self._rcv_table = self._make_route_table()
+        rcv_layout.addWidget(self._rcv_table)
+        tabs.addTab(rcv_tab, "Rotas Recebidas")
 
         # ── Fechar ── #
         close_btns = QDialogButtonBox(QDialogButtonBox.Close)
@@ -201,6 +260,59 @@ class BgpPeerDetailDialog(QDialog):
             "Consultando…" if loading
             else btn.text().replace("Consultando…",
                                     "Carregar " + btn.objectName()))
+
+    # ── fetch configuração verbose ───────────────────────────────────── #
+
+    def _load_config(self):
+        self._cfg_load_btn.setEnabled(False)
+        self._cfg_load_btn.setText("Consultando…")
+        self._cfg_status.setText("Aguardando resposta do equipamento…")
+        peer = self._peer_ip
+
+        def fetch():
+            return self._session.run(
+                f"display bgp peer {peer} verbose", timeout=15.0)
+
+        def done(text: str):
+            self._cfg_load_btn.setEnabled(True)
+            self._cfg_load_btn.setText("Atualizar Configuração")
+            info = _parse_peer_verbose(text)
+            # limpa grade anterior
+            while self._cfg_grid.count():
+                item = self._cfg_grid.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            labels = [
+                ("Tipo de sessão",         info["type"]),
+                ("Router ID remoto",        info["router_id"]),
+                ("Estado atual",           info["state"]),
+                ("Hold Time configurado",  info["hold_cfg"]),
+                ("Keepalive configurado",  info["keep_cfg"]),
+                ("BFD",                    info["bfd"]),
+                ("Community enviada",      info["community"]),
+                ("Route-Policy de import", info["pol_import"]),
+                ("Route-Policy de export", info["pol_export"]),
+                ("Rotas recebidas ativas", info["rcv_active"]),
+                ("Rotas aceitas",          info["accepted"]),
+                ("Rotas enviadas",         info["sent"]),
+                ("Interface de conexão",   info["conn_iface"]),
+                ("Update Group ID",        info["update_grp"]),
+            ]
+            for i, (lbl_text, val_text) in enumerate(labels):
+                col, ri = (i % 2) * 2, i // 2
+                lbl = QLabel(f"<b>{lbl_text}:</b>")
+                val = QLabel(val_text)
+                val.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                self._cfg_grid.addWidget(lbl, ri, col)
+                self._cfg_grid.addWidget(val, ri, col + 1)
+            self._cfg_status.setText("Configuração carregada.")
+
+        def err(msg: str):
+            self._cfg_load_btn.setEnabled(True)
+            self._cfg_load_btn.setText("Tentar novamente")
+            self._cfg_status.setText(f"Erro: {msg}")
+
+        run_async(fetch, done, err)
 
     # ── fetch anunciadas ─────────────────────────────────────────────── #
 
