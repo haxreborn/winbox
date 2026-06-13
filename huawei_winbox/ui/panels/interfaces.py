@@ -10,7 +10,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QPushButton, QMessageBox, QDialog, QVBoxLayout, QGridLayout,
-    QLabel, QPlainTextEdit, QDialogButtonBox, QGroupBox,
+    QLabel, QDialogButtonBox, QGroupBox, QScrollArea, QWidget,
 )
 
 from ...core import parsers, translator
@@ -25,80 +25,98 @@ class InterfaceDetailDialog(QDialog):
     def __init__(self, iface_name: str, info: dict, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Detalhes — {iface_name}")
-        self.resize(600, 520)
-        layout = QVBoxLayout(self)
+        self.resize(580, 480)
+        root = QVBoxLayout(self)
+
+        # Área rolável para caber em todas as telas
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        scroll.setWidget(content)
+        root.addWidget(scroll)
+        layout = QVBoxLayout(content)
+        layout.setSpacing(6)
 
         def grp(title: str, pairs: list[tuple[str, str]]) -> QGroupBox:
             box = QGroupBox(title)
             grid = QGridLayout(box)
+            grid.setColumnStretch(1, 1)
             for row, (label, value) in enumerate(pairs):
                 lbl = QLabel(f"<b>{label}:</b>")
+                lbl.setMinimumWidth(160)
                 val = QLabel(value or "—")
                 val.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                grid.addWidget(lbl, row, 0)
-                grid.addWidget(val, row, 1)
+                val.setWordWrap(True)
+                grid.addWidget(lbl, row, 0, Qt.AlignTop)
+                grid.addWidget(val, row, 1, Qt.AlignTop)
             return box
 
-        estado_cor = "#2e8b57" if "UP" in info["state"].upper() else "#c0392b"
+        # ── Estado / protocolo ── #
+        state_up = "UP" in info["state"].upper()
+        cor = "#2e8b57" if state_up else "#c0392b"
         status_lbl = QLabel(
-            f'<b>Estado:</b>  '
-            f'<span style="color:{estado_cor}; font-weight:bold">'
-            f'{info["state"] or "—"}</span>'
-            f'  &nbsp;&nbsp;  <b>Protocolo:</b>  '
-            f'<span style="color:{estado_cor}; font-weight:bold">'
-            f'{info["protocol"] or "—"}</span>'
+            f'<b>Estado físico:</b> '
+            f'<span style="color:{cor};font-weight:bold">{info["state"] or "—"}</span>'
+            f'&nbsp;&nbsp;&nbsp;'
+            f'<b>Protocolo:</b> '
+            f'<span style="color:{cor};font-weight:bold">{info["protocol"] or "—"}</span>'
         )
         layout.addWidget(status_lbl)
 
         if info["description"]:
-            desc = QLabel(f'<b>Descrição:</b>  {info["description"]}')
-            layout.addWidget(desc)
+            layout.addWidget(
+                QLabel(f'<b>Descrição:</b>  {info["description"]}'))
 
-        # Camada física
+        # ── Camada física ── #
         phys_pairs = [
-            ("Velocidade", info["speed"]),
-            ("Duplex", info["duplex"]),
-            ("Negociação", info["negotiation"]),
-            ("MTU", info["mtu"]),
+            ("Velocidade",    info["speed"]),
+            ("Duplex",        info["duplex"]),
+            ("Negociação",    info["negotiation"]),
+            ("MTU",           info["mtu"]),
         ]
-        layout.addWidget(grp("Camada física", phys_pairs))
+        # Filtrar campos com valor
+        phys_pairs = [(k, v) for k, v in phys_pairs if v]
+        if phys_pairs:
+            layout.addWidget(grp("Camada física", phys_pairs))
 
-        # Módulo óptico (SFP) — só mostra se tiver algum dado
+        # ── Módulo óptico (SFP) — só mostra se houver dados ── #
         optical_pairs = [
-            ("Tipo de transceptor", info["transceiver_type"]),
-            ("Fabricante", info.get("vendor", "")),
-            ("Modelo (part number)", info.get("part_number", "")),
-            ("Comprimento de onda", info.get("wavelength", "")),
-            ("TX Power", info["tx_power"]),
-            ("RX Power", info["rx_power"]),
-            ("Corrente do laser", info["bias_current"]),
+            ("Tipo de transceptor",   info["transceiver_type"]),
+            ("Fabricante",            info.get("vendor", "")),
+            ("Modelo (part number)",  info.get("part_number", "")),
+            ("Comprimento de onda",   info.get("wavelength", "")),
+            ("TX Power",              info["tx_power"]),
+            ("RX Power",              info["rx_power"]),
+            ("Corrente do laser",     info["bias_current"]),
             ("Temperatura do módulo", info["temperature"]),
         ]
-        if any(v for _, v in optical_pairs):
+        optical_pairs = [(k, v) for k, v in optical_pairs if v]
+        if optical_pairs:
             layout.addWidget(grp("Módulo óptico (SFP/SFP+)", optical_pairs))
 
-        # Contadores
-        counter_pairs = [
-            ("Utilização de entrada", info["input_rate"]),
-            ("Utilização de saída", info["output_rate"]),
-            ("Erros de entrada", info["input_errors"]),
-            ("Erros de saída", info["output_errors"]),
+        # ── Tráfego e utilização ── #
+        traffic_pairs = [
+            ("Utilização de entrada (RX)", info["input_rate"]),
+            ("Utilização de saída (TX)",   info["output_rate"]),
         ]
-        layout.addWidget(grp("Contadores", counter_pairs))
+        traffic_pairs = [(k, v) for k, v in traffic_pairs if v]
+        if traffic_pairs:
+            layout.addWidget(grp("Tráfego", traffic_pairs))
 
-        # Saída bruta do equipamento
-        raw_box = QGroupBox("Saída completa do equipamento")
-        raw_layout = QVBoxLayout(raw_box)
-        raw_edit = QPlainTextEdit(info["raw"])
-        raw_edit.setObjectName("terminal")
-        raw_edit.setReadOnly(True)
-        raw_edit.setMaximumHeight(140)
-        raw_layout.addWidget(raw_edit)
-        layout.addWidget(raw_box)
+        # ── Contadores de erros ── #
+        err_pairs = [
+            ("Erros de entrada",   info["input_errors"]),
+            ("Erros de saída",     info["output_errors"]),
+        ]
+        err_pairs = [(k, v) for k, v in err_pairs if v]
+        if err_pairs:
+            layout.addWidget(grp("Erros", err_pairs))
+
+        layout.addStretch(1)
 
         btns = QDialogButtonBox(QDialogButtonBox.Close)
         btns.rejected.connect(self.reject)
-        layout.addWidget(btns)
+        root.addWidget(btns)
 
 
 class InterfacesPanel(BasePanel):

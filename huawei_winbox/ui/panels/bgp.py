@@ -1,12 +1,20 @@
-"""Painel BGP — vizinhos IPv4 e IPv6, rotas anunciadas/recebidas e configuração."""
+"""Painel BGP — vizinhos IPv4 e IPv6, rotas e configuração.
+
+Duplo clique num peer abre o diálogo de detalhes com rotas anunciadas e
+recebidas carregadas sob demanda (clique num botão por vez).
+"""
 
 from __future__ import annotations
+
+import re
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QPushButton, QMessageBox, QTableWidgetItem,
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPlainTextEdit,
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QDialogButtonBox, QTabWidget, QWidget, QGroupBox,
+    QTableWidget, QHeaderView, QSizePolicy, QGridLayout,
+    QScrollArea,
 )
 
 from ...core import parsers, translator
@@ -15,45 +23,281 @@ from ..worker import run_async
 from .base import BasePanel
 
 
-class BgpRoutingTableDialog(QDialog):
-    """Mostra rotas anunciadas e recebidas para um peer BGP."""
+# ─── Utilitário: parser de tabela de rotas VRP ─────────────────────────── #
 
-    def __init__(self, peer_ip: str, parent=None):
+def _parse_bgp_route_table(text: str) -> tuple[list[dict], int]:
+    """Converte a saída de 'display bgp routing-table peer X …' em linhas.
+
+    Retorna (lista_de_rotas, total_declarado).
+    Cada rota: flags, network, nexthop, med, locprf, path.
+    """
+    total_m = re.search(r"Total Number of Routes:\s*(\d+)", text)
+    total = int(total_m.group(1)) if total_m else 0
+
+    route_re = re.compile(
+        r"^\s*([*>dishSi ]{1,4})\s+"   # flags
+        r"(\S+)\s+"                      # network/prefix
+        r"(\S+)\s+"                      # nexthop
+        r"(\S*)\s+"                      # MED
+        r"(\S*)\s+"                      # LocPrf
+        r"(\S*)\s+"                      # PrefVal
+        r"(.+?)\s*$"                     # Path/Ogn
+    )
+    routes = []
+    for line in text.splitlines():
+        m = route_re.match(line)
+        if m:
+            routes.append({
+                "flags":   m.group(1).strip(),
+                "network": m.group(2),
+                "nexthop": m.group(3),
+                "med":     m.group(4),
+                "locprf":  m.group(5),
+                "path":    m.group(7).strip(),
+            })
+    return routes, total or len(routes)
+
+
+def _fill_route_table(table: QTableWidget, routes: list[dict], total: int,
+                      status_lbl: QLabel):
+    table.setRowCount(0)
+    for r in routes:
+        row = table.rowCount()
+        table.insertRow(row)
+        for c, key in enumerate(("flags", "network", "nexthop",
+                                 "med", "locprf", "path")):
+            item = QTableWidgetItem(r.get(key, ""))
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            table.setItem(row, c, item)
+    status_lbl.setText(
+        f"{len(routes)} rota(s) exibida(s)"
+        + (f" de {total} no total" if total > len(routes) else ""))
+
+
+# ─── Diálogo de detalhes de um peer BGP ────────────────────────────────── #
+
+class BgpPeerDetailDialog(QDialog):
+    """Exibe informações completas de um vizinho BGP.
+
+    As rotas anunciadas e recebidas são carregadas sob demanda —
+    cada seção tem seu próprio botão 'Carregar'.
+    """
+
+    _ROUTE_COLS = ["Status", "Rede/Prefixo", "Next Hop",
+                   "MED", "LocPrf", "AS Path / Origem"]
+
+    def __init__(self, row: dict, session, local_as: int, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Tabela de Rotas BGP — {peer_ip}")
-        self.resize(800, 560)
-        layout = QVBoxLayout(self)
+        self._row = row
+        self._session = session
+        self._local_as = local_as
+        self._peer_ip = row["peer"]
+        self._is_ipv6 = "6" in row.get("family", "IPv4")
 
-        self._tabs = QTabWidget()
-        self._adv_edit = self._make_edit()
-        self._rcv_edit = self._make_edit()
-        self._tabs.addTab(self._adv_edit, "Rotas Anunciadas (Advertised)")
-        self._tabs.addTab(self._rcv_edit, "Rotas Recebidas (Received)")
-        layout.addWidget(self._tabs)
+        self.setWindowTitle(f"Peer BGP — {self._peer_ip}")
+        self.resize(900, 640)
 
-        self._status = QLabel("Consultando equipamento...")
-        layout.addWidget(self._status)
+        root = QVBoxLayout(self)
 
-        btns = QDialogButtonBox(QDialogButtonBox.Close)
-        btns.rejected.connect(self.reject)
-        layout.addWidget(btns)
+        # ── Scroll para caber em telas menores ── #
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        scroll.setWidget(content)
+        root.addWidget(scroll)
+        vbox = QVBoxLayout(content)
+        vbox.setSpacing(8)
 
-    @staticmethod
-    def _make_edit() -> QPlainTextEdit:
-        w = QPlainTextEdit()
-        w.setObjectName("terminal")
-        w.setReadOnly(True)
-        return w
+        # ── Informações do peer ── #
+        info_grp = QGroupBox("Informações do Vizinho")
+        info_grid = QGridLayout(info_grp)
+        state = row.get("state", "")
+        cor = "#2e8b57" if "established" in state.lower() else "#c0392b"
+        pairs = [
+            ("IP do Vizinho",    self._peer_ip),
+            ("AS Remoto",        row.get("as", "—")),
+            ("Família",          row.get("family", "IPv4")),
+            ("Estado",
+             f'<span style="color:{cor};font-weight:bold">{state or "—"}</span>'),
+            ("Tempo Ativo",      row.get("up_down", "—")),
+            ("Prefixos Recebidos", row.get("prefrcv", "—")),
+        ]
+        for i, (label, value) in enumerate(pairs):
+            col, row_i = (i % 2) * 2, i // 2
+            lbl = QLabel(f"<b>{label}:</b>")
+            val = QLabel(value)
+            val.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            info_grid.addWidget(lbl, row_i, col)
+            info_grid.addWidget(val, row_i, col + 1)
+        vbox.addWidget(info_grp)
 
-    def populate_advertised(self, text: str):
-        self._adv_edit.setPlainText(text)
+        # ── Rotas Anunciadas ── #
+        adv_grp = QGroupBox("Rotas Anunciadas para este Peer")
+        adv_layout = QVBoxLayout(adv_grp)
+        adv_bar = QHBoxLayout()
+        self._adv_load_btn = QPushButton("Carregar Rotas Anunciadas")
+        self._adv_load_btn.clicked.connect(self._load_advertised)
+        self._adv_status = QLabel("Clique em 'Carregar' para consultar.")
+        adv_bar.addWidget(self._adv_load_btn)
+        adv_bar.addWidget(self._adv_status)
+        adv_bar.addStretch(1)
+        adv_layout.addLayout(adv_bar)
+        self._adv_table = self._make_route_table()
+        adv_layout.addWidget(self._adv_table)
+        vbox.addWidget(adv_grp)
 
-    def populate_received(self, text: str):
-        self._rcv_edit.setPlainText(text)
+        # ── Rotas Recebidas ── #
+        rcv_grp = QGroupBox("Rotas Recebidas deste Peer")
+        rcv_layout = QVBoxLayout(rcv_grp)
+        rcv_bar = QHBoxLayout()
+        self._rcv_load_btn = QPushButton("Carregar Rotas Recebidas")
+        self._rcv_load_btn.clicked.connect(self._load_received)
+        self._rcv_status = QLabel("Clique em 'Carregar' para consultar.")
+        rcv_bar.addWidget(self._rcv_load_btn)
+        rcv_bar.addWidget(self._rcv_status)
+        rcv_bar.addStretch(1)
+        rcv_layout.addLayout(rcv_bar)
+        self._rcv_table = self._make_route_table()
+        rcv_layout.addWidget(self._rcv_table)
+        vbox.addWidget(rcv_grp)
 
-    def set_status(self, text: str):
-        self._status.setText(text)
+        # ── Ações rápidas ── #
+        act_grp = QGroupBox("Ações Rápidas")
+        act_bar = QHBoxLayout(act_grp)
+        for text, slot in [
+            ("Desabilitar Peer", self._disable),
+            ("Habilitar Peer",   self._enable),
+            ("Soft Reset...",    self._soft_reset),
+        ]:
+            btn = QPushButton(text)
+            btn.clicked.connect(slot)
+            act_bar.addWidget(btn)
+        act_bar.addStretch(1)
+        vbox.addWidget(act_grp)
 
+        # ── Fechar ── #
+        close_btns = QDialogButtonBox(QDialogButtonBox.Close)
+        close_btns.rejected.connect(self.reject)
+        root.addWidget(close_btns)
+
+    # ── helpers ───────────────────────────────────────────────────────── #
+
+    def _make_route_table(self) -> QTableWidget:
+        t = QTableWidget(0, len(self._ROUTE_COLS))
+        t.setHorizontalHeaderLabels(self._ROUTE_COLS)
+        t.setEditTriggers(QTableWidget.NoEditTriggers)
+        t.setSelectionBehavior(QTableWidget.SelectRows)
+        t.setAlternatingRowColors(True)
+        t.verticalHeader().setVisible(False)
+        t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        t.horizontalHeader().setStretchLastSection(True)
+        t.setMinimumHeight(160)
+        t.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        return t
+
+    def _set_loading(self, btn: QPushButton, loading: bool):
+        btn.setEnabled(not loading)
+        btn.setText(
+            "Consultando…" if loading
+            else btn.text().replace("Consultando…",
+                                    "Carregar " + btn.objectName()))
+
+    # ── fetch anunciadas ─────────────────────────────────────────────── #
+
+    def _load_advertised(self):
+        self._adv_load_btn.setEnabled(False)
+        self._adv_load_btn.setText("Consultando…")
+        self._adv_status.setText("Aguardando resposta do equipamento…")
+
+        peer = self._peer_ip
+        is6 = self._is_ipv6
+
+        def fetch():
+            cmd = (
+                f"display bgp ipv6 routing-table peer {peer} advertised-routes"
+                if is6 else
+                f"display bgp routing-table peer {peer} advertised-routes"
+            )
+            return self._session.run(cmd, timeout=30.0)
+
+        def done(text: str):
+            self._adv_load_btn.setEnabled(True)
+            self._adv_load_btn.setText("Atualizar Rotas Anunciadas")
+            routes, total = _parse_bgp_route_table(text)
+            _fill_route_table(self._adv_table, routes, total, self._adv_status)
+
+        def err(msg: str):
+            self._adv_load_btn.setEnabled(True)
+            self._adv_load_btn.setText("Atualizar Rotas Anunciadas")
+            self._adv_status.setText(f"Erro: {msg}")
+
+        run_async(fetch, done, err)
+
+    # ── fetch recebidas ──────────────────────────────────────────────── #
+
+    def _load_received(self):
+        self._rcv_load_btn.setEnabled(False)
+        self._rcv_load_btn.setText("Consultando…")
+        self._rcv_status.setText("Aguardando resposta do equipamento…")
+
+        peer = self._peer_ip
+        is6 = self._is_ipv6
+
+        def fetch():
+            cmd = (
+                f"display bgp ipv6 routing-table peer {peer} received-routes"
+                if is6 else
+                f"display bgp routing-table peer {peer} received-routes"
+            )
+            return self._session.run(cmd, timeout=30.0)
+
+        def done(text: str):
+            self._rcv_load_btn.setEnabled(True)
+            self._rcv_load_btn.setText("Atualizar Rotas Recebidas")
+            routes, total = _parse_bgp_route_table(text)
+            _fill_route_table(self._rcv_table, routes, total, self._rcv_status)
+
+        def err(msg: str):
+            self._rcv_load_btn.setEnabled(True)
+            self._rcv_load_btn.setText("Atualizar Rotas Recebidas")
+            self._rcv_status.setText(f"Erro: {msg}")
+
+        run_async(fetch, done, err)
+
+    # ── ações rápidas ────────────────────────────────────────────────── #
+
+    def _disable(self):
+        if self._local_as:
+            cmds = translator.bgp_peer_ignore(
+                self._local_as, self._peer_ip, ignore=True)
+            from ..command_preview import CommandPreviewDialog
+            if CommandPreviewDialog.confirm(cmds, self):
+                self._session.configure(cmds)
+
+    def _enable(self):
+        if self._local_as:
+            cmds = translator.bgp_peer_ignore(
+                self._local_as, self._peer_ip, ignore=False)
+            from ..command_preview import CommandPreviewDialog
+            if CommandPreviewDialog.confirm(cmds, self):
+                self._session.configure(cmds)
+
+    def _soft_reset(self):
+        if not self._local_as:
+            return
+        values = SimpleForm.ask(
+            "Soft Reset",
+            [("direction", "Direção", "choice:both|import|export", "both")],
+            self)
+        if values:
+            cmds = translator.bgp_soft_reset(
+                self._local_as, self._peer_ip, values["direction"])
+            from ..command_preview import CommandPreviewDialog
+            if CommandPreviewDialog.confirm(cmds, self, system_view=False):
+                self._session.run_many(cmds)
+
+
+# ─── Painel principal BGP ─────────────────────────────────────────────── #
 
 class BgpPanel(BasePanel):
     title = "BGP"
@@ -63,6 +307,7 @@ class BgpPanel(BasePanel):
     def __init__(self, session, parent=None):
         self.local_as = 0
         super().__init__(session, parent)
+        self.table.itemDoubleClicked.connect(self._open_peer_detail)
 
     def build_toolbar(self, layout):
         for text, slot in [
@@ -73,8 +318,6 @@ class BgpPanel(BasePanel):
             ("Anunciar rede...", self._add_network),
             ("Desabilitar peer", self._disable_peer),
             ("Habilitar peer", self._enable_peer),
-            ("Rotas anunciadas...", self._show_advertised),
-            ("Rotas recebidas...", self._show_received),
             ("Soft Reset...", self._soft_reset),
             ("Aplicar Route-Policy...", self._route_policy),
             ("Criar Route-Policy...", self._create_route_policy),
@@ -123,16 +366,13 @@ class BgpPanel(BasePanel):
                 item.setData(Qt.UserRole, row)
                 self.table.setItem(r, c, item)
             state = row.get("state", "").lower()
-            if "established" in state:
-                color = Qt.darkGreen
-            elif "idle" in state or "active" in state:
-                color = Qt.darkGray
-            else:
-                color = Qt.darkYellow
+            color = (Qt.darkGreen if "established" in state
+                     else Qt.darkGray if "idle" in state or "active" in state
+                     else Qt.darkYellow)
             for c in range(self.table.columnCount()):
-                item = self.table.item(r, c)
-                if item:
-                    item.setForeground(color)
+                it = self.table.item(r, c)
+                if it:
+                    it.setForeground(color)
 
         suffix = f" — AS local {self.local_as}" if self.local_as else ""
         self._set_busy(False, f"{len(rows)} vizinho(s){suffix}")
@@ -141,7 +381,15 @@ class BgpPanel(BasePanel):
         return [row["peer"], row["as"], row.get("family", "IPv4"),
                 row["up_down"], row["state"], row["prefrcv"]]
 
-    # ----------------------------------------------------------------- #
+    # ── duplo clique abre detalhe do peer ──────────────────────────── #
+
+    def _open_peer_detail(self, item):
+        row = item.data(Qt.UserRole)
+        if row:
+            dlg = BgpPeerDetailDialog(row, self.session, self.local_as, self)
+            dlg.exec()
+
+    # ─────────────────────────────────────────────────────────────────── #
     def _require_as(self, values: dict | None = None) -> int:
         if values and values.get("local_as"):
             return int(values["local_as"])
@@ -347,79 +595,7 @@ class BgpPanel(BasePanel):
                 self.apply_commands(translator.bgp_keepalive(
                     local_as, values["keepalive"], values["hold_time"]))
 
-    # ----------------------------------------------------------------- #
-    # Visualização de rotas por peer
-    # ----------------------------------------------------------------- #
-
-    def _need_peer(self) -> dict | None:
-        row = self.selected_row()
-        if not row:
-            QMessageBox.information(
-                self, self.title, "Selecione um vizinho na tabela.")
-        return row
-
-    def _show_advertised(self):
-        row = self._need_peer()
-        if not row:
-            return
-        self._open_routing_table(row, start_tab=0)
-
-    def _show_received(self):
-        row = self._need_peer()
-        if not row:
-            return
-        self._open_routing_table(row, start_tab=1)
-
-    def _open_routing_table(self, row: dict, start_tab: int = 0):
-        peer_ip = row["peer"]
-        family = row.get("family", "IPv4")
-        is_ipv6 = "6" in family
-
-        dlg = BgpRoutingTableDialog(peer_ip, self)
-        dlg._tabs.setCurrentIndex(start_tab)
-        dlg.show()
-
-        self._set_busy(True, f"Consultando rotas de {peer_ip}...")
-
-        def fetch():
-            if is_ipv6:
-                adv_cmd = (
-                    f"display bgp ipv6 routing-table peer "
-                    f"{peer_ip} advertised-routes")
-                rcv_cmd = (
-                    f"display bgp ipv6 routing-table peer "
-                    f"{peer_ip} received-routes")
-            else:
-                adv_cmd = (
-                    f"display bgp routing-table peer "
-                    f"{peer_ip} advertised-routes")
-                rcv_cmd = (
-                    f"display bgp routing-table peer "
-                    f"{peer_ip} received-routes")
-            adv = self.session.run(adv_cmd, timeout=30.0)
-            rcv = self.session.run(rcv_cmd, timeout=30.0)
-            return adv, rcv
-
-        def done(result):
-            adv, rcv = result
-            self._set_busy(False, "")
-            dlg.populate_advertised(adv)
-            dlg.populate_received(rcv)
-            adv_count = adv.count("\n") - 4
-            rcv_count = rcv.count("\n") - 4
-            dlg.set_status(
-                f"Anunciadas: ~{max(adv_count, 0)} prefixos  |  "
-                f"Recebidas: ~{max(rcv_count, 0)} prefixos")
-
-        def err(msg: str):
-            self._set_busy(False, "")
-            dlg.set_status(f"Erro: {msg}")
-
-        run_async(fetch, done, err)
-
-    # ----------------------------------------------------------------- #
-    # Criação / edição de Route-Policy completa
-    # ----------------------------------------------------------------- #
+    # ── Route-Policy / prefix-list / filtros ─────────────────────────── #
 
     def _create_route_policy(self):
         values = SimpleForm.ask(
@@ -447,7 +623,7 @@ class BgpPanel(BasePanel):
               "Valor da cláusula (nome de lista, IP, número, etc.)",
               "text", ""),
              ("extra",
-              "Extra (repete AS para prepend, GE/LE para prefix, etc.)",
+              "Extra (repete AS p/ prepend)",
               "int", 1),
              ("remove", "Remover nó", "bool", False)],
             self)
@@ -465,65 +641,72 @@ class BgpPanel(BasePanel):
                 translator.route_policy_node(pn, nd, md, remove=True))
             return
 
-        if clause == "Apenas criar nó":
-            self.apply_commands(translator.route_policy_node(pn, nd, md))
-        elif clause == "if-match prefix-list" and val:
-            cmds = translator.route_policy_node(pn, nd, md)
-            cmds += translator.route_policy_match_prefix(pn, nd, md, val)
-            self.apply_commands(cmds)
-        elif clause == "if-match as-path-filter" and val:
-            cmds = translator.route_policy_node(pn, nd, md)
-            cmds += translator.route_policy_match_as_path(pn, nd, md, val)
-            self.apply_commands(cmds)
-        elif clause == "if-match community-filter" and val:
-            cmds = translator.route_policy_node(pn, nd, md)
-            cmds += translator.route_policy_match_community(pn, nd, md, val)
-            self.apply_commands(cmds)
-        elif clause == "if-match tag" and val:
-            cmds = translator.route_policy_node(pn, nd, md)
-            cmds += translator.route_policy_match_tag(pn, nd, md, int(val))
-            self.apply_commands(cmds)
-        elif clause == "if-match interface" and val:
-            cmds = translator.route_policy_node(pn, nd, md)
-            cmds += translator.route_policy_match_interface(pn, nd, md, val)
-            self.apply_commands(cmds)
-        elif clause == "apply local-preference" and val:
-            cmds = translator.route_policy_node(pn, nd, md)
-            cmds += translator.route_policy_set_local_pref(pn, nd, md, int(val))
-            self.apply_commands(cmds)
-        elif clause == "apply cost (MED)" and val:
-            cmds = translator.route_policy_node(pn, nd, md)
-            cmds += translator.route_policy_set_med(pn, nd, md, int(val))
-            self.apply_commands(cmds)
-        elif clause == "apply next-hop" and val:
-            cmds = translator.route_policy_node(pn, nd, md)
-            cmds += translator.route_policy_set_next_hop(pn, nd, md, val)
-            self.apply_commands(cmds)
-        elif clause == "apply community" and val:
-            cmds = translator.route_policy_node(pn, nd, md)
-            cmds += translator.route_policy_set_community(pn, nd, md, val)
-            self.apply_commands(cmds)
-        elif clause == "apply as-path prepend" and val:
-            repeat = max(1, values["extra"])
-            cmds = translator.route_policy_node(pn, nd, md)
-            cmds += translator.route_policy_set_as_path_prepend(
-                pn, nd, md, int(val), repeat=repeat)
-            self.apply_commands(cmds)
-        elif clause == "apply origin":
-            origin = val if val in ("igp", "egp", "incomplete") else "igp"
-            cmds = translator.route_policy_node(pn, nd, md)
-            cmds += translator.route_policy_set_origin(pn, nd, md, origin)
-            self.apply_commands(cmds)
+        dispatch = {
+            "Apenas criar nó":
+                lambda: translator.route_policy_node(pn, nd, md),
+            "if-match prefix-list":
+                lambda: (translator.route_policy_node(pn, nd, md)
+                         + translator.route_policy_match_prefix(pn, nd, md, val))
+                if val else None,
+            "if-match as-path-filter":
+                lambda: (translator.route_policy_node(pn, nd, md)
+                         + translator.route_policy_match_as_path(pn, nd, md, val))
+                if val else None,
+            "if-match community-filter":
+                lambda: (translator.route_policy_node(pn, nd, md)
+                         + translator.route_policy_match_community(pn, nd, md, val))
+                if val else None,
+            "if-match tag":
+                lambda: (translator.route_policy_node(pn, nd, md)
+                         + translator.route_policy_match_tag(pn, nd, md, int(val)))
+                if val else None,
+            "if-match interface":
+                lambda: (translator.route_policy_node(pn, nd, md)
+                         + translator.route_policy_match_interface(pn, nd, md, val))
+                if val else None,
+            "apply local-preference":
+                lambda: (translator.route_policy_node(pn, nd, md)
+                         + translator.route_policy_set_local_pref(pn, nd, md, int(val)))
+                if val else None,
+            "apply cost (MED)":
+                lambda: (translator.route_policy_node(pn, nd, md)
+                         + translator.route_policy_set_med(pn, nd, md, int(val)))
+                if val else None,
+            "apply next-hop":
+                lambda: (translator.route_policy_node(pn, nd, md)
+                         + translator.route_policy_set_next_hop(pn, nd, md, val))
+                if val else None,
+            "apply community":
+                lambda: (translator.route_policy_node(pn, nd, md)
+                         + translator.route_policy_set_community(pn, nd, md, val))
+                if val else None,
+            "apply as-path prepend":
+                lambda: (translator.route_policy_node(pn, nd, md)
+                         + translator.route_policy_set_as_path_prepend(
+                             pn, nd, md, int(val),
+                             repeat=max(1, values["extra"])))
+                if val else None,
+            "apply origin":
+                lambda: (translator.route_policy_node(pn, nd, md)
+                         + translator.route_policy_set_origin(
+                             pn, nd, md,
+                             val if val in ("igp", "egp", "incomplete") else "igp")),
+        }
+        fn = dispatch.get(clause)
+        if fn:
+            cmds = fn()
+            if cmds:
+                self.apply_commands(cmds)
 
     def _as_path_filter(self):
         values = SimpleForm.ask(
             "AS-Path Filter",
-            [("filter_name", "Nome do filtro (ex.: filter1 ou número 1-99)", "text", ""),
+            [("filter_name",
+              "Nome do filtro (ex.: filter1 ou número 1-99)", "text", ""),
              ("index", "Índice", "int", 10),
              ("action", "Ação", "choice:permit|deny", "permit"),
              ("regexp",
-              "Expressão regular (ex.: ^65001_ ou _65000$)",
-              "text", ""),
+              "Expressão regular (ex.: ^65001_ ou _65000$)", "text", ""),
              ("remove", "Remover entrada", "bool", False)],
             self)
         if values and values["filter_name"]:
