@@ -7,10 +7,10 @@ pré-visualização de CLI antes de irem ao equipamento.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
-    QTableWidgetItem, QLabel, QMessageBox, QHeaderView,
+    QTableWidgetItem, QLabel, QMessageBox, QHeaderView, QComboBox,
 )
 
 from ..command_preview import CommandPreviewDialog
@@ -35,6 +35,19 @@ class BasePanel(QWidget):
         self.refresh_btn = QPushButton("Atualizar")
         self.refresh_btn.clicked.connect(self.refresh)
         self.toolbar.addWidget(self.refresh_btn)
+
+        # Auto-atualização em tempo real, com intervalo escolhido pelo
+        # usuário. O timer só dispara um novo fetch se o anterior já
+        # terminou (refresh ignora quando _busy).
+        self.auto_combo = QComboBox()
+        self.auto_combo.addItem("Auto: desligado", 0)
+        for secs in (5, 10, 30, 60):
+            self.auto_combo.addItem(f"Auto: {secs}s", secs)
+        self.auto_combo.currentIndexChanged.connect(self._auto_changed)
+        self.toolbar.addWidget(self.auto_combo)
+        self._auto_timer = QTimer(self)
+        self._auto_timer.timeout.connect(self.refresh)
+
         self.build_toolbar(self.toolbar)
         self.toolbar.addStretch(1)
         self.status_label = QLabel("")
@@ -68,6 +81,26 @@ class BasePanel(QWidget):
         return []
 
     # ----- infraestrutura --------------------------------------------- #
+    def _auto_changed(self):
+        secs = self.auto_combo.currentData() or 0
+        if secs:
+            self._auto_timer.start(secs * 1000)
+            self.refresh()
+        else:
+            self._auto_timer.stop()
+
+    def hideEvent(self, event):
+        # Janela fechada/minimizada: para de consultar o equipamento.
+        self._auto_timer.stop()
+        super().hideEvent(event)
+
+    def showEvent(self, event):
+        # Reativa o timer se o usuário deixou o auto ligado.
+        secs = self.auto_combo.currentData() or 0
+        if secs and not self._auto_timer.isActive():
+            self._auto_timer.start(secs * 1000)
+        super().showEvent(event)
+
     def refresh(self):
         if self._busy:
             return
