@@ -1,13 +1,58 @@
-"""Painel BGP — vizinhos IPv4 e IPv6, anúncio de redes e configuração."""
+"""Painel BGP — vizinhos IPv4 e IPv6, rotas anunciadas/recebidas e configuração."""
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QPushButton, QMessageBox, QTableWidgetItem
+from PySide6.QtWidgets import (
+    QPushButton, QMessageBox, QTableWidgetItem,
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPlainTextEdit,
+    QDialogButtonBox, QTabWidget, QWidget, QGroupBox,
+)
 
 from ...core import parsers, translator
 from ..forms import SimpleForm
+from ..worker import run_async
 from .base import BasePanel
+
+
+class BgpRoutingTableDialog(QDialog):
+    """Mostra rotas anunciadas e recebidas para um peer BGP."""
+
+    def __init__(self, peer_ip: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Tabela de Rotas BGP — {peer_ip}")
+        self.resize(800, 560)
+        layout = QVBoxLayout(self)
+
+        self._tabs = QTabWidget()
+        self._adv_edit = self._make_edit()
+        self._rcv_edit = self._make_edit()
+        self._tabs.addTab(self._adv_edit, "Rotas Anunciadas (Advertised)")
+        self._tabs.addTab(self._rcv_edit, "Rotas Recebidas (Received)")
+        layout.addWidget(self._tabs)
+
+        self._status = QLabel("Consultando equipamento...")
+        layout.addWidget(self._status)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Close)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    @staticmethod
+    def _make_edit() -> QPlainTextEdit:
+        w = QPlainTextEdit()
+        w.setObjectName("terminal")
+        w.setReadOnly(True)
+        return w
+
+    def populate_advertised(self, text: str):
+        self._adv_edit.setPlainText(text)
+
+    def populate_received(self, text: str):
+        self._rcv_edit.setPlainText(text)
+
+    def set_status(self, text: str):
+        self._status.setText(text)
 
 
 class BgpPanel(BasePanel):
@@ -28,8 +73,14 @@ class BgpPanel(BasePanel):
             ("Anunciar rede...", self._add_network),
             ("Desabilitar peer", self._disable_peer),
             ("Habilitar peer", self._enable_peer),
+            ("Rotas anunciadas...", self._show_advertised),
+            ("Rotas recebidas...", self._show_received),
             ("Soft Reset...", self._soft_reset),
-            ("Route-Policy...", self._route_policy),
+            ("Aplicar Route-Policy...", self._route_policy),
+            ("Criar Route-Policy...", self._create_route_policy),
+            ("AS-Path Filter...", self._as_path_filter),
+            ("Community Filter...", self._community_filter),
+            ("Prefix List...", self._prefix_list),
             ("BFD no peer...", self._bfd_peer),
             ("Community...", self._community),
             ("Keepalive/Hold...", self._keepalive),
@@ -295,3 +346,222 @@ class BgpPanel(BasePanel):
             if local_as:
                 self.apply_commands(translator.bgp_keepalive(
                     local_as, values["keepalive"], values["hold_time"]))
+
+    # ----------------------------------------------------------------- #
+    # Visualização de rotas por peer
+    # ----------------------------------------------------------------- #
+
+    def _need_peer(self) -> dict | None:
+        row = self.selected_row()
+        if not row:
+            QMessageBox.information(
+                self, self.title, "Selecione um vizinho na tabela.")
+        return row
+
+    def _show_advertised(self):
+        row = self._need_peer()
+        if not row:
+            return
+        self._open_routing_table(row, start_tab=0)
+
+    def _show_received(self):
+        row = self._need_peer()
+        if not row:
+            return
+        self._open_routing_table(row, start_tab=1)
+
+    def _open_routing_table(self, row: dict, start_tab: int = 0):
+        peer_ip = row["peer"]
+        family = row.get("family", "IPv4")
+        is_ipv6 = "6" in family
+
+        dlg = BgpRoutingTableDialog(peer_ip, self)
+        dlg._tabs.setCurrentIndex(start_tab)
+        dlg.show()
+
+        self._set_busy(True, f"Consultando rotas de {peer_ip}...")
+
+        def fetch():
+            if is_ipv6:
+                adv_cmd = (
+                    f"display bgp ipv6 routing-table peer "
+                    f"{peer_ip} advertised-routes")
+                rcv_cmd = (
+                    f"display bgp ipv6 routing-table peer "
+                    f"{peer_ip} received-routes")
+            else:
+                adv_cmd = (
+                    f"display bgp routing-table peer "
+                    f"{peer_ip} advertised-routes")
+                rcv_cmd = (
+                    f"display bgp routing-table peer "
+                    f"{peer_ip} received-routes")
+            adv = self.session.run(adv_cmd, timeout=30.0)
+            rcv = self.session.run(rcv_cmd, timeout=30.0)
+            return adv, rcv
+
+        def done(result):
+            adv, rcv = result
+            self._set_busy(False, "")
+            dlg.populate_advertised(adv)
+            dlg.populate_received(rcv)
+            adv_count = adv.count("\n") - 4
+            rcv_count = rcv.count("\n") - 4
+            dlg.set_status(
+                f"Anunciadas: ~{max(adv_count, 0)} prefixos  |  "
+                f"Recebidas: ~{max(rcv_count, 0)} prefixos")
+
+        def err(msg: str):
+            self._set_busy(False, "")
+            dlg.set_status(f"Erro: {msg}")
+
+        run_async(fetch, done, err)
+
+    # ----------------------------------------------------------------- #
+    # Criação / edição de Route-Policy completa
+    # ----------------------------------------------------------------- #
+
+    def _create_route_policy(self):
+        values = SimpleForm.ask(
+            "Criar / Editar Route-Policy",
+            [("policy_name", "Nome da Route-Policy", "text", ""),
+             ("node", "Nó (número)", "int", 10),
+             ("mode", "Modo do nó", "choice:permit|deny", "permit"),
+             ("clause",
+              "Cláusula (match/set)",
+              "choice:"
+              "Apenas criar nó|"
+              "if-match prefix-list|"
+              "if-match as-path-filter|"
+              "if-match community-filter|"
+              "if-match tag|"
+              "if-match interface|"
+              "apply local-preference|"
+              "apply cost (MED)|"
+              "apply next-hop|"
+              "apply community|"
+              "apply as-path prepend|"
+              "apply origin",
+              "Apenas criar nó"),
+             ("value",
+              "Valor da cláusula (nome de lista, IP, número, etc.)",
+              "text", ""),
+             ("extra",
+              "Extra (repete AS para prepend, GE/LE para prefix, etc.)",
+              "int", 1),
+             ("remove", "Remover nó", "bool", False)],
+            self)
+        if not values or not values["policy_name"]:
+            return
+
+        pn = values["policy_name"]
+        nd = values["node"]
+        md = values["mode"]
+        clause = values["clause"]
+        val = values["value"].strip()
+
+        if values["remove"]:
+            self.apply_commands(
+                translator.route_policy_node(pn, nd, md, remove=True))
+            return
+
+        if clause == "Apenas criar nó":
+            self.apply_commands(translator.route_policy_node(pn, nd, md))
+        elif clause == "if-match prefix-list" and val:
+            cmds = translator.route_policy_node(pn, nd, md)
+            cmds += translator.route_policy_match_prefix(pn, nd, md, val)
+            self.apply_commands(cmds)
+        elif clause == "if-match as-path-filter" and val:
+            cmds = translator.route_policy_node(pn, nd, md)
+            cmds += translator.route_policy_match_as_path(pn, nd, md, val)
+            self.apply_commands(cmds)
+        elif clause == "if-match community-filter" and val:
+            cmds = translator.route_policy_node(pn, nd, md)
+            cmds += translator.route_policy_match_community(pn, nd, md, val)
+            self.apply_commands(cmds)
+        elif clause == "if-match tag" and val:
+            cmds = translator.route_policy_node(pn, nd, md)
+            cmds += translator.route_policy_match_tag(pn, nd, md, int(val))
+            self.apply_commands(cmds)
+        elif clause == "if-match interface" and val:
+            cmds = translator.route_policy_node(pn, nd, md)
+            cmds += translator.route_policy_match_interface(pn, nd, md, val)
+            self.apply_commands(cmds)
+        elif clause == "apply local-preference" and val:
+            cmds = translator.route_policy_node(pn, nd, md)
+            cmds += translator.route_policy_set_local_pref(pn, nd, md, int(val))
+            self.apply_commands(cmds)
+        elif clause == "apply cost (MED)" and val:
+            cmds = translator.route_policy_node(pn, nd, md)
+            cmds += translator.route_policy_set_med(pn, nd, md, int(val))
+            self.apply_commands(cmds)
+        elif clause == "apply next-hop" and val:
+            cmds = translator.route_policy_node(pn, nd, md)
+            cmds += translator.route_policy_set_next_hop(pn, nd, md, val)
+            self.apply_commands(cmds)
+        elif clause == "apply community" and val:
+            cmds = translator.route_policy_node(pn, nd, md)
+            cmds += translator.route_policy_set_community(pn, nd, md, val)
+            self.apply_commands(cmds)
+        elif clause == "apply as-path prepend" and val:
+            repeat = max(1, values["extra"])
+            cmds = translator.route_policy_node(pn, nd, md)
+            cmds += translator.route_policy_set_as_path_prepend(
+                pn, nd, md, int(val), repeat=repeat)
+            self.apply_commands(cmds)
+        elif clause == "apply origin":
+            origin = val if val in ("igp", "egp", "incomplete") else "igp"
+            cmds = translator.route_policy_node(pn, nd, md)
+            cmds += translator.route_policy_set_origin(pn, nd, md, origin)
+            self.apply_commands(cmds)
+
+    def _as_path_filter(self):
+        values = SimpleForm.ask(
+            "AS-Path Filter",
+            [("filter_name", "Nome do filtro (ex.: filter1 ou número 1-99)", "text", ""),
+             ("index", "Índice", "int", 10),
+             ("action", "Ação", "choice:permit|deny", "permit"),
+             ("regexp",
+              "Expressão regular (ex.: ^65001_ ou _65000$)",
+              "text", ""),
+             ("remove", "Remover entrada", "bool", False)],
+            self)
+        if values and values["filter_name"]:
+            self.apply_commands(translator.ip_as_path_filter(
+                values["filter_name"], values["index"], values["action"],
+                values["regexp"], remove=values["remove"]))
+
+    def _community_filter(self):
+        values = SimpleForm.ask(
+            "Community Filter",
+            [("filter_name", "Nome do filtro", "text", ""),
+             ("index", "Índice", "int", 10),
+             ("action", "Ação", "choice:permit|deny", "permit"),
+             ("community",
+              "Community (ex.: 65000:100 ou internet ou no-export)",
+              "text", ""),
+             ("remove", "Remover entrada", "bool", False)],
+            self)
+        if values and values["filter_name"] and values["community"]:
+            self.apply_commands(translator.ip_community_filter(
+                values["filter_name"], values["index"], values["action"],
+                values["community"], remove=values["remove"]))
+
+    def _prefix_list(self):
+        values = SimpleForm.ask(
+            "IP Prefix List",
+            [("name", "Nome da lista", "text", ""),
+             ("index", "Índice", "int", 10),
+             ("action", "Ação", "choice:permit|deny", "permit"),
+             ("prefix", "Prefixo (ex.: 10.0.0.0/8)", "text", ""),
+             ("ge", "GE — comprimento mínimo (0 = não usar)", "int", 0),
+             ("le", "LE — comprimento máximo (0 = não usar)", "int", 0),
+             ("remove", "Remover entrada", "bool", False)],
+            self)
+        if values and values["name"] and values["prefix"]:
+            self.apply_commands(translator.ip_prefix_list(
+                values["name"], values["index"], values["action"],
+                values["prefix"],
+                ge=values["ge"] or None,
+                le=values["le"] or None,
+                remove=values["remove"]))

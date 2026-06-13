@@ -1255,3 +1255,88 @@ def traffic_policy_interface(interface: str, direction: str,
         cmds.append(f"traffic-policy {policy_name} {direction}")
     cmds.append("quit")
     return cmds
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Route-Policy — match / set clauses
+# ─────────────────────────────────────────────────────────────────────────────
+
+def route_policy_match_as_path(policy_name: str, node: int,
+                                action: str, filter_name: str) -> list[str]:
+    return [f"route-policy {policy_name} {action} node {node}",
+            f"if-match as-path-filter {filter_name}",
+            "quit"]
+
+
+def route_policy_match_community(policy_name: str, node: int,
+                                  action: str, community_filter: str) -> list[str]:
+    return [f"route-policy {policy_name} {action} node {node}",
+            f"if-match community-filter {community_filter}",
+            "quit"]
+
+
+def route_policy_match_interface(policy_name: str, node: int,
+                                  action: str, interface: str) -> list[str]:
+    return [f"route-policy {policy_name} {action} node {node}",
+            f"if-match interface {interface}",
+            "quit"]
+
+
+def route_policy_match_tag(policy_name: str, node: int,
+                            action: str, tag: int) -> list[str]:
+    return [f"route-policy {policy_name} {action} node {node}",
+            f"if-match tag {tag}",
+            "quit"]
+
+
+def route_policy_set_local_pref(policy_name: str, node: int,
+                                 action: str, local_pref: int) -> list[str]:
+    return [f"route-policy {policy_name} {action} node {node}",
+            f"apply local-preference {local_pref}",
+            "quit"]
+
+
+def route_policy_set_med(policy_name: str, node: int,
+                          action: str, med: int) -> list[str]:
+    return [f"route-policy {policy_name} {action} node {node}",
+            f"apply cost {med}",
+            "quit"]
+
+
+def route_policy_set_next_hop(policy_name: str, node: int,
+                               action: str, next_hop: str) -> list[str]:
+    return [f"route-policy {policy_name} {action} node {node}",
+            f"apply ip-address nexthop {next_hop}",
+            "quit"]
+
+
+def route_policy_set_as_path_prepend(policy_name: str, node: int,
+                                      action: str, as_number: int,
+                                      repeat: int = 1) -> list[str]:
+    cmds = [f"route-policy {policy_name} {action} node {node}"]
+    cmds.append(f"apply as-path {' '.join([str(as_number)] * repeat)} additive")
+    cmds.append("quit")
+    return cmds
+
+
+def route_policy_set_origin(policy_name: str, node: int,
+                             action: str, origin: str = "igp") -> list[str]:
+    return [f"route-policy {policy_name} {action} node {node}",
+            f"apply origin {origin}",
+            "quit"]
+
+
+def ip_as_path_filter(filter_name: str, index: int,
+                       action: str, regexp: str,
+                       remove: bool = False) -> list[str]:
+    if remove:
+        return [f"undo ip as-path-filter {filter_name} index {index}"]
+    return [f"ip as-path-filter {filter_name} index {index} {action} {regexp}"]
+
+
+def ip_community_filter(filter_name: str, index: int,
+                         action: str, community: str,
+                         remove: bool = False) -> list[str]:
+    if remove:
+        return [f"undo ip community-filter {filter_name} index {index}"]
+    return [f"ip community-filter {filter_name} index {index} {action} {community}"]
