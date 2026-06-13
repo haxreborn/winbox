@@ -11,9 +11,11 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
     QTableWidgetItem, QLabel, QMessageBox, QHeaderView, QComboBox,
+    QSizePolicy,
 )
 
 from ..command_preview import CommandPreviewDialog
+from ..flow_layout import FlowLayout
 from ..worker import run_async
 
 
@@ -30,30 +32,43 @@ class BasePanel(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
+        root.setSpacing(2)
 
-        self.toolbar = QHBoxLayout()
+        # ── Linha de controles: Atualizar | Auto | <espaço> | Status ── #
+        controls = QHBoxLayout()
+        controls.setSpacing(4)
         self.refresh_btn = QPushButton("Atualizar")
         self.refresh_btn.clicked.connect(self.refresh)
-        self.toolbar.addWidget(self.refresh_btn)
+        controls.addWidget(self.refresh_btn)
 
-        # Auto-atualização em tempo real, com intervalo escolhido pelo
-        # usuário. O timer só dispara um novo fetch se o anterior já
-        # terminou (refresh ignora quando _busy).
         self.auto_combo = QComboBox()
         self.auto_combo.addItem("Auto: desligado", 0)
         for secs in (5, 10, 30, 60):
             self.auto_combo.addItem(f"Auto: {secs}s", secs)
         self.auto_combo.currentIndexChanged.connect(self._auto_changed)
-        self.toolbar.addWidget(self.auto_combo)
+        controls.addWidget(self.auto_combo)
         self._auto_timer = QTimer(self)
         self._auto_timer.timeout.connect(self.refresh)
 
-        self.build_toolbar(self.toolbar)
-        self.toolbar.addStretch(1)
+        controls.addStretch(1)
         self.status_label = QLabel("")
-        self.toolbar.addWidget(self.status_label)
-        root.addLayout(self.toolbar)
+        controls.addWidget(self.status_label)
+        root.addLayout(controls)
 
+        # ── Área de botões do painel com flow (quebra de linha) ─────── #
+        self._btn_widget = QWidget()
+        self._btn_widget.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.toolbar = FlowLayout(self._btn_widget, h_spacing=4, v_spacing=3)
+        root.addWidget(self._btn_widget)
+
+        self.build_toolbar(self.toolbar)
+
+        # Esconde o widget de botões se o painel não registrar nenhum.
+        if self.toolbar.count() == 0:
+            self._btn_widget.hide()
+
+        # ── Tabela principal ─────────────────────────────────────────── #
         self.table = QTableWidget(0, len(self.columns))
         self.table.setHorizontalHeaderLabels(self.columns)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -69,7 +84,7 @@ class BasePanel(QWidget):
         self.refresh()
 
     # ----- a serem definidos pelas subclasses ------------------------- #
-    def build_toolbar(self, layout: QHBoxLayout) -> None:
+    def build_toolbar(self, layout: FlowLayout) -> None:
         """Adiciona botões específicos do painel."""
 
     def fetch(self) -> list[dict]:
@@ -90,12 +105,10 @@ class BasePanel(QWidget):
             self._auto_timer.stop()
 
     def hideEvent(self, event):
-        # Janela fechada/minimizada: para de consultar o equipamento.
         self._auto_timer.stop()
         super().hideEvent(event)
 
     def showEvent(self, event):
-        # Reativa o timer se o usuário deixou o auto ligado.
         secs = self.auto_combo.currentData() or 0
         if secs and not self._auto_timer.isActive():
             self._auto_timer.start(secs * 1000)
