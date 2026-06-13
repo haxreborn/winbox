@@ -15,6 +15,7 @@ import re
 import socket
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QPlainTextEdit
 
 from ..worker import run_async
@@ -65,6 +66,45 @@ class _TerminalView(QPlainTextEdit):
 
     def detach(self) -> None:
         self._chan = None
+
+    # ------------------------------------------------------------------ #
+    def focusNextPrevChild(self, _next: bool) -> bool:
+        # Impede o Qt de usar Tab para trocar de widget — o Tab precisa
+        # chegar ao keyPressEvent para virar autocomplete no VRP.
+        return False
+
+    def mouseReleaseEvent(self, event) -> None:
+        # PuTTY: selecionar com o mouse já copia para a área de
+        # transferência.
+        super().mouseReleaseEvent(event)
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            QGuiApplication.clipboard().setText(
+                cursor.selectedText().replace("\u2029", "\n"))
+
+    def mousePressEvent(self, event) -> None:
+        # PuTTY: botão direito cola a área de transferência.
+        if event.button() == Qt.MouseButton.RightButton:
+            self._paste()
+            return
+        super().mousePressEvent(event)
+
+    def contextMenuEvent(self, event) -> None:
+        # Sem menu de contexto — o botão direito é "colar", como no PuTTY.
+        event.accept()
+
+    def _paste(self) -> None:
+        text = QGuiApplication.clipboard().text()
+        if not text:
+            return
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        self._send(text)
+        # Mantém o buffer local coerente para histórico/backspace: o que
+        # vier depois da última quebra de linha é a linha em digitação.
+        if "\n" in text:
+            self._typed = text.rsplit("\n", 1)[1]
+        else:
+            self._typed += text
 
     # ------------------------------------------------------------------ #
     def keyPressEvent(self, event) -> None:  # noqa: C901 — switch é extenso
@@ -134,6 +174,14 @@ class _TerminalView(QPlainTextEdit):
         # O texto parcial já está na linha do equipamento; envia só o \t.
         if key == Qt.Key.Key_Tab:
             self._send("\t")
+            return
+
+        # ── Colar: Ctrl+V, Ctrl+Shift+V ou Shift+Insert ─────────────────
+        ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
+        shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+        if (key == Qt.Key.Key_V and ctrl) or \
+                (key == Qt.Key.Key_Insert and shift):
+            self._paste()
             return
 
         # ── Ctrl+C: interrompe comando ──────────────────────────────────

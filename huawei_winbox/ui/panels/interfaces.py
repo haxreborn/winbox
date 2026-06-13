@@ -126,14 +126,23 @@ class InterfacesPanel(BasePanel):
     def fetch(self):
         rows = parsers.parse_interface_description(
             self.session.run("display interface description"))
-        # RX/TX: utilização real de banda vinda do "display interface
-        # brief" (colunas InUti/OutUti), casada por nome de interface.
+        # RX/TX: banda real (bits/sec convertidos para Mbps/Gbps) lida do
+        # dump completo "display interface" — um único comando para todas
+        # as portas. Se falhar, cai para o percentual do "brief".
+        util: dict = {}
         try:
-            brief = parsers.parse_interface_brief(
-                self.session.run("display interface brief"))
-            util = {b["name"]: (b["in_util"], b["out_util"]) for b in brief}
+            util = parsers.parse_interface_rates(
+                self.session.run("display interface", timeout=60.0))
         except Exception:
-            util = {}
+            pass
+        if not util:
+            try:
+                brief = parsers.parse_interface_brief(
+                    self.session.run("display interface brief"))
+                util = {b["name"]: (b["in_util"], b["out_util"])
+                        for b in brief}
+            except Exception:
+                pass
         for r in rows:
             rx, tx = util.get(r["name"], ("", ""))
             r["rx"] = rx

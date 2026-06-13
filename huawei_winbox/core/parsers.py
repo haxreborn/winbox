@@ -68,6 +68,54 @@ def parse_interface_description(text: str) -> list[dict]:
     return rows
 
 
+def format_bps(bps: int) -> str:
+    """Formata bits/s de forma legível: 1234567 -> '1.23 Mbps'."""
+    if bps >= 1_000_000_000:
+        return f"{bps / 1_000_000_000:.2f} Gbps"
+    if bps >= 1_000_000:
+        return f"{bps / 1_000_000:.2f} Mbps"
+    if bps >= 1_000:
+        return f"{bps / 1_000:.1f} Kbps"
+    return f"{bps} bps"
+
+
+def parse_interface_rates(text: str) -> dict[str, tuple[str, str]]:
+    """``display interface`` (todas) -> {nome: (rx, tx)} em Mbps/Gbps.
+
+    Percorre o dump completo associando cada bloco "X current state" às
+    linhas "input rate ... bits/sec" / "output rate ... bits/sec" que o
+    seguem ("Last 300 seconds input rate", "300 seconds output rate"...).
+    """
+    rates: dict[str, tuple[str, str]] = {}
+    current = ""
+    rx = tx = -1
+    state_re = re.compile(rf"^({_IFACE_NAME}) current state\s*:", re.I)
+    in_re = re.compile(r"input rate[:\s]+([\d,]+)\s*bits/sec", re.I)
+    out_re = re.compile(r"output rate[:\s]+([\d,]+)\s*bits/sec", re.I)
+
+    def flush():
+        if current and rx >= 0 and tx >= 0:
+            rates[expand_iface_name(current)] = (format_bps(rx),
+                                                 format_bps(tx))
+
+    for line in text.splitlines():
+        s = line.strip()
+        m = state_re.match(s)
+        if m:
+            flush()
+            current, rx, tx = m.group(1), -1, -1
+            continue
+        m = in_re.search(s)
+        if m and rx < 0:
+            rx = int(m.group(1).replace(",", ""))
+            continue
+        m = out_re.search(s)
+        if m and tx < 0:
+            tx = int(m.group(1).replace(",", ""))
+    flush()
+    return rates
+
+
 def parse_interface_detail(text: str) -> dict:
     """``display interface <name>`` ->
     dict com status, velocidade, duplex, potência ótica, estatísticas."""
