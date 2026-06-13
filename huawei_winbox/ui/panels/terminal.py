@@ -42,6 +42,10 @@ _STRIP = re.compile(
     r"|\x08"                            # BS isolado restante
 )
 
+# Fim de linha que é só o prompt do VRP (<nome> ou [nome...], com espaço
+# opcional). Limita o backspace: dali para trás não se apaga.
+_PROMPT_END = re.compile(r"[<\[][^<>\[\]\r\n]{0,80}[>\]] ?$")
+
 
 class _TerminalView(QPlainTextEdit):
     """Widget de saída que também captura teclas e as envia ao canal SSH.
@@ -143,13 +147,17 @@ class _TerminalView(QPlainTextEdit):
         # para que o efeito visual seja instantâneo. O eco que o VRP devolve
         # (\x08 \x08 ou \x1b[1D \x1b[1D) é descartado pelo _STRIP, caso
         # contrário apagaria o caractere errado ou deixaria espaços extras.
+        #
+        # O limite NÃO é o buffer _typed (que não enxerga o que o Tab/
+        # autocomplete acrescentou na linha) e sim o prompt: apaga até a
+        # última linha da tela virar só "<nome>" / "[nome]".
         if key == Qt.Key.Key_Backspace:
-            if self._typed:
-                self._typed = self._typed[:-1]
-                cursor = self.textCursor()
-                cursor.movePosition(cursor.MoveOperation.End)
+            cursor = self.textCursor()
+            cursor.movePosition(cursor.MoveOperation.End)
+            if not _PROMPT_END.search(cursor.block().text()):
                 cursor.deletePreviousChar()
                 self.setTextCursor(cursor)
+                self._typed = self._typed[:-1]
                 self._send("\x08")
             return
 
