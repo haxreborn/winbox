@@ -23,9 +23,11 @@ from ..worker import run_async
 from .base import BasePanel
 
 
-# ─── Utilitário: parser de tabela de rotas VRP ─────────────────────────── #
+# ─── Utilitários: parsers de tabela de rotas VRP ──────────────────────── #
 
-_FLAG_CHARS = frozenset("*>idshSe? ")
+_FLAG_CHARS       = frozenset("*>idshSe? ")
+_ROUTE_FLAG_START = frozenset("*>idshSe?")   # char válido no início de linha de rota
+_MAX_ROUTES       = 5_000                      # limite de exibição por tabela
 
 
 def _is_ip_prefix(s: str) -> bool:
@@ -37,43 +39,91 @@ def _is_ip_prefix(s: str) -> bool:
     return False
 
 
-def _parse_bgp_route_table(text: str) -> tuple[list[dict], int]:
-    """Converte saída de 'display bgp [ipv6] routing-table peer X …' em linhas.
+# ── Formato colunar fixo (IPv4): Network NextHop MED LocPrf PrefVal Path ─ #
 
-    Usa tokenização por whitespace para ser robusto a variações de
-    alinhamento entre versões VRP.  Valida que o primeiro token de dados
-    é um prefixo IP para excluir linhas de legenda/cabeçalho.
-    """
-    total_m = re.search(r"Total Number of Routes:\s*(\d+)", text)
-    total = int(total_m.group(1)) if total_m else 0
+def _parse_bgp_route_table_columnar(text: str) -> list[dict]:
+    lines = text.splitlines()
 
-    routes = []
-    for raw_line in text.splitlines():
-        line = raw_line.lstrip()
-        if not line:
+    # Fase 1: localizar cabeçalho e posições brutas das colunas
+    col_net = col_nh = col_med = col_lp = col_pv = col_path = -1
+    hdr_idx = -1
+    for i, line in enumerate(lines):
+        lo = line.lower()
+        if "network" in lo and "nexthop" in lo and "med" in lo:
+            hdr_idx = i
+            col_net  = lo.find("network")
+            col_nh   = lo.find("nexthop")
+            col_med  = lo.find("med")
+            col_lp   = lo.find("locprf")
+            col_pv   = lo.find("prefval") if "prefval" in lo else -1
+            col_path = lo.find("path")
+            break
+
+    # Fase 2: calcular offset (chars de flag deslocam dados vs cabeçalho)
+    offset = 0
+    if hdr_idx >= 0 and col_net >= 0:
+        for line in lines[hdr_idx + 1:]:
+            if not line.strip():
+                continue
+            lo = line.lower()
+            if "network" in lo and "nexthop" in lo:
+                continue
+            fi = 0
+            while fi < len(line) and fi < 10 and line[fi] in _FLAG_CHARS:
+                fi += 1
+            tok = line[fi:].split()
+            if not tok or not _is_ip_prefix(tok[0]):
+                continue
+            pos = line.find(tok[0], max(0, fi - 1))
+            if pos >= 0:
+                offset = pos - col_net
+            break
+
+    # Ajustar todas as colunas pelo offset
+    def adj(c: int) -> int:
+        return (c + offset) if c >= 0 else -1
+
+    a_nh   = adj(col_nh)
+    a_med  = adj(col_med)
+    a_lp   = adj(col_lp)
+    a_pv   = adj(col_pv)
+    a_path = adj(col_path)
+
+    # Fase 3: parsear linhas de dados com fatiamento posicional
+    routes: list[dict] = []
+    for raw in lines:
+        if not raw.strip():
+            continue
+        lo = raw.lower()
+        if "network" in lo and "nexthop" in lo:
             continue
 
-        # Consome caracteres de flag no início (até 6)
         fi = 0
-        while fi < len(line) and fi < 6 and line[fi] in _FLAG_CHARS:
+        while fi < len(raw) and fi < 10 and raw[fi] in _FLAG_CHARS:
             fi += 1
-        flags = line[:fi].strip()
-        tokens = line[fi:].split()
+        flags = raw[:fi].strip()
 
-        if not tokens:
+        tokens = raw[fi:].split()
+        if not tokens or not _is_ip_prefix(tokens[0]):
             continue
-
-        # Primeiro token deve ser um prefixo IP
         net = tokens[0]
-        if not _is_ip_prefix(net):
-            continue
 
-        nexthop = tokens[1] if len(tokens) > 1 else ""
-        med     = tokens[2] if len(tokens) > 2 else ""
-        locprf  = tokens[3] if len(tokens) > 3 else ""
-        # prefval em [4], path/ogn em [5:]
-        path    = " ".join(tokens[5:]) if len(tokens) > 5 else (
-                  tokens[4] if len(tokens) > 4 else "")
+        if a_nh > 0 and len(raw) > a_nh:
+            nexthop = raw[a_nh: a_med if a_med > 0 else None].strip()
+            # sanidade: nexthop deve ser endereço IP
+            nh_tok = nexthop.split()[0] if nexthop else ""
+            if not re.match(r"^[\d.:a-fA-F]+$", nh_tok):
+                nexthop = tokens[1] if len(tokens) > 1 else ""
+            med_end = a_lp  if a_lp  > 0 else (a_pv if a_pv > 0 else a_path)
+            lp_end  = a_pv  if a_pv  > 0 else a_path
+            med    = raw[a_med: med_end].strip() if a_med > 0 else ""
+            locprf = raw[a_lp:  lp_end ].strip() if a_lp  > 0 else ""
+            path   = raw[a_path:].strip()          if a_path > 0 else ""
+        else:
+            # fallback sem cabeçalho
+            nexthop = tokens[1] if len(tokens) > 1 else ""
+            med = locprf = ""
+            path = " ".join(tokens[2:]) if len(tokens) > 2 else ""
 
         routes.append({
             "flags":   flags,
@@ -83,6 +133,101 @@ def _parse_bgp_route_table(text: str) -> tuple[list[dict], int]:
             "locprf":  locprf,
             "path":    path,
         })
+    return routes
+
+
+# ── Formato chave-valor multi-linha (IPv6 VRP) ───────────────────────────── #
+
+def _kv_to_route(r: dict) -> dict:
+    net = r["network_addr"]
+    if r["prefixlen"]:
+        net = f"{net}/{r['prefixlen']}"
+    return {
+        "flags":   r["flags"],
+        "network": net,
+        "nexthop": r["nexthop"],
+        "med":     r["med"],
+        "locprf":  r["locprf"],
+        "path":    r["path"],
+    }
+
+
+def _parse_bgp_route_table_kv(text: str) -> list[dict]:
+    """Parser para o formato chave-valor multi-linha do IPv6 VRP.
+
+    *>  Network  : 2804:4354::  PrefixLen : 32
+        NextHop  : 2001:db8::1  LocPrf    :
+        MED      : 0             PrefVal   : 0
+        Path/Ogn : 65000 65001i
+    """
+    routes: list[dict] = []
+    cur: dict | None = None
+
+    for line in text.splitlines():
+        # Nova rota: primeiro char é flag E linha contém "Network :"
+        if line and line[0] in _ROUTE_FLAG_START and re.search(r'\bNetwork\s*:', line):
+            if cur:
+                routes.append(_kv_to_route(cur))
+            fm = re.match(r'^([*>idshSe?][*>idshSe? ]*)', line)
+            flags = fm.group(1).strip() if fm else ""
+            nm = re.search(r'\bNetwork\s*:\s*(\S*)', line)
+            pm = re.search(r'\bPrefixLen\s*:\s*(\d+)', line)
+            cur = {
+                "flags":        flags,
+                "network_addr": nm.group(1).strip() if nm else "",
+                "prefixlen":    pm.group(1)          if pm else "",
+                "nexthop": "",
+                "locprf":  "",
+                "med":     "",
+                "path":    "",
+            }
+            continue
+
+        if cur is None:
+            continue
+
+        m = re.search(r'\bNextHop\s*:\s*(\S+)', line, re.IGNORECASE)
+        if m:
+            cur["nexthop"] = m.group(1)
+
+        m = re.search(r'\bLocPrf\s*:\s*(\d+)', line, re.IGNORECASE)
+        if m:
+            cur["locprf"] = m.group(1)
+
+        m = re.search(r'\bMED\s*:\s*(\d+)', line, re.IGNORECASE)
+        if m:
+            cur["med"] = m.group(1)
+
+        # Path/Ogn pode ter múltiplos ASes: captura tudo após ":"
+        m = re.search(r'\bPath/Ogn\s*:\s*(.+)', line, re.IGNORECASE)
+        if m:
+            cur["path"] = m.group(1).strip()
+
+    if cur:
+        routes.append(_kv_to_route(cur))
+
+    return routes
+
+
+# ── Ponto de entrada unificado ───────────────────────────────────────────── #
+
+def _parse_bgp_route_table(text: str) -> tuple[list[dict], int]:
+    """Detecta o formato VRP e delega ao parser adequado.
+
+    Formato KV multi-linha (IPv6): detectado por 'Network :' no texto.
+    Formato colunar (IPv4):        cabeçalho com Network/NextHop/MED.
+    """
+    total_m = re.search(r"Total Number of Routes:\s*(\d+)", text)
+    total = int(total_m.group(1)) if total_m else 0
+
+    if re.search(r'\bNetwork\s*:', text):
+        routes = _parse_bgp_route_table_kv(text)
+    else:
+        routes = _parse_bgp_route_table_columnar(text)
+
+    if len(routes) > _MAX_ROUTES:
+        routes = routes[:_MAX_ROUTES]
+
     return routes, total or len(routes)
 
 
@@ -262,12 +407,12 @@ class BgpPeerDetailDialog(QDialog):
         adv_layout.addWidget(self._adv_table)
         tabs.addTab(adv_tab, "Rotas Anunciadas")
 
-        # ── Tab 3: Rotas Recebidas ── #
+        # ── Tab 3: Rotas Aceitas ── #
         rcv_tab = QWidget()
         rcv_layout = QVBoxLayout(rcv_tab)
         rcv_bar = QHBoxLayout()
-        self._rcv_load_btn = QPushButton("Carregar Rotas Recebidas")
-        self._rcv_load_btn.clicked.connect(self._load_received)
+        self._rcv_load_btn = QPushButton("Carregar Rotas Aceitas")
+        self._rcv_load_btn.clicked.connect(self._load_accepted)
         self._rcv_status = QLabel("Clique para consultar o equipamento.")
         rcv_bar.addWidget(self._rcv_load_btn)
         rcv_bar.addWidget(self._rcv_status)
@@ -275,7 +420,7 @@ class BgpPeerDetailDialog(QDialog):
         rcv_layout.addLayout(rcv_bar)
         self._rcv_table = self._make_route_table()
         rcv_layout.addWidget(self._rcv_table)
-        tabs.addTab(rcv_tab, "Rotas Recebidas")
+        tabs.addTab(rcv_tab, "Rotas Aceitas")
 
         # ── Fechar ── #
         close_btns = QDialogButtonBox(QDialogButtonBox.Close)
@@ -311,35 +456,60 @@ class BgpPeerDetailDialog(QDialog):
         self._cfg_load_btn.setText("Consultando…")
         self._cfg_status.setText("Aguardando resposta do equipamento…")
         peer = self._peer_ip
+        is6  = self._is_ipv6
 
         def fetch():
-            return self._session.run(
-                f"display bgp peer {peer} verbose", timeout=15.0)
+            verb_cmd = (
+                f"display bgp ipv6 peer {peer} verbose" if is6
+                else f"display bgp peer {peer} verbose"
+            )
+            verbose = self._session.run(verb_cmd, timeout=15.0)
+            # Route-policy vem da configuração ativa
+            try:
+                cfg = self._session.run(
+                    f"display current-configuration bgp | include {peer}",
+                    timeout=10.0)
+            except Exception:
+                cfg = ""
+            return verbose, cfg
 
-        def done(text: str):
+        def done(result):
+            verbose, cfg = result
             self._cfg_load_btn.setEnabled(True)
             self._cfg_load_btn.setText("Atualizar Configuração")
-            info = _parse_peer_verbose(text)
+            info = _parse_peer_verbose(verbose)
+
+            # Sobrescreve route-policies com dados da configuração ativa
+            for line in cfg.splitlines():
+                m = re.search(
+                    r'peer\s+\S+\s+route-policy\s+(\S+)\s+(import|export)',
+                    line, re.IGNORECASE)
+                if m:
+                    if m.group(2).lower() == "import":
+                        info["pol_import"] = m.group(1)
+                    else:
+                        info["pol_export"] = m.group(1)
+
             # limpa grade anterior
             while self._cfg_grid.count():
                 item = self._cfg_grid.takeAt(0)
                 if item.widget():
                     item.widget().deleteLater()
             labels = [
-                ("Tipo de sessão",         info["type"]),
-                ("Router ID remoto",       info["router_id"]),
-                ("Estado atual",          info["state"]),
-                ("Hold Time",             info["hold_cfg"]),
-                ("Keepalive",             info["keep_cfg"]),
-                ("BFD",                   info["bfd"]),
-                ("Community enviada",     info["community"]),
-                ("Route-Policy import",   info["pol_import"]),
-                ("Route-Policy export",   info["pol_export"]),
-                ("Rotas recebidas ativas",info["rcv_active"]),
-                ("Rotas aceitas",         info["accepted"]),
-                ("Rotas enviadas",        info["sent"]),
-                ("Interface de conexão",  info["conn_iface"]),
-                ("Update Group ID",       info["update_grp"]),
+                ("Tipo de sessão",          info["type"]),
+                ("Router ID remoto",        info["router_id"]),
+                ("Estado atual",           info["state"]),
+                ("Hold Time",              info["hold_cfg"]),
+                ("Keepalive",              info["keep_cfg"]),
+                ("BFD",                    info["bfd"]),
+                ("Community enviada",      info["community"]),
+                ("Route-Policy import",    info["pol_import"]),
+                ("Route-Policy export",    info["pol_export"]),
+                ("Rotas recebidas ativas", info["rcv_active"]),
+                ("Rotas aceitas",          info["accepted"]),
+                ("Rotas enviadas",         info["sent"]),
+                ("Interface de conexão",   info["conn_iface"]),
+                ("Update Group ID",        info["update_grp"]),
             ]
             found = sum(1 for _, v in labels if v != "—")
             for i, (lbl_text, val_text) in enumerate(labels):
@@ -349,14 +519,12 @@ class BgpPeerDetailDialog(QDialog):
                 val.setTextInteractionFlags(Qt.TextSelectableByMouse)
                 self._cfg_grid.addWidget(lbl, ri, col)
                 self._cfg_grid.addWidget(val, ri, col + 1)
-            if found == 0 and text.strip():
-                # Nenhum padrão reconhecido — mostra os primeiros 600 chars
-                # para diagnóstico
+            if found == 0 and verbose.strip():
                 raw_lbl = QLabel(
                     "<b>Saída do equipamento (formato não reconhecido):</b>")
                 self._cfg_grid.addWidget(raw_lbl, len(labels) // 2 + 1, 0, 1, 4)
                 from PySide6.QtWidgets import QPlainTextEdit
-                raw_edit = QPlainTextEdit(text[:600])
+                raw_edit = QPlainTextEdit(verbose[:600])
                 raw_edit.setObjectName("terminal")
                 raw_edit.setReadOnly(True)
                 raw_edit.setMaximumHeight(120)
@@ -403,33 +571,33 @@ class BgpPeerDetailDialog(QDialog):
 
         run_async(fetch, done, err)
 
-    # ── fetch recebidas ──────────────────────────────────────────────── #
+    # ── fetch rotas aceitas ──────────────────────────────────────────── #
 
-    def _load_received(self):
+    def _load_accepted(self):
         self._rcv_load_btn.setEnabled(False)
         self._rcv_load_btn.setText("Consultando…")
         self._rcv_status.setText("Aguardando resposta do equipamento…")
 
         peer = self._peer_ip
-        is6 = self._is_ipv6
+        is6  = self._is_ipv6
 
         def fetch():
             cmd = (
-                f"display bgp ipv6 routing-table peer {peer} received-routes"
+                f"display bgp ipv6 routing-table peer {peer} accepted-routes"
                 if is6 else
-                f"display bgp routing-table peer {peer} received-routes"
+                f"display bgp routing-table peer {peer} accepted-routes"
             )
-            return self._session.run(cmd, timeout=30.0)
+            return self._session.run(cmd, timeout=60.0)
 
         def done(text: str):
             self._rcv_load_btn.setEnabled(True)
-            self._rcv_load_btn.setText("Atualizar Rotas Recebidas")
+            self._rcv_load_btn.setText("Atualizar Rotas Aceitas")
             routes, total = _parse_bgp_route_table(text)
             _fill_route_table(self._rcv_table, routes, total, self._rcv_status)
 
         def err(msg: str):
             self._rcv_load_btn.setEnabled(True)
-            self._rcv_load_btn.setText("Atualizar Rotas Recebidas")
+            self._rcv_load_btn.setText("Atualizar Rotas Aceitas")
             self._rcv_status.setText(f"Erro: {msg}")
 
         run_async(fetch, done, err)
