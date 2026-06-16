@@ -164,11 +164,13 @@ def _parse_bgp_route_table_kv(text: str) -> list[dict]:
     cur: dict | None = None
 
     for line in text.splitlines():
-        # Nova rota: primeiro char é flag E linha contém "Network :"
-        if line and line[0] in _ROUTE_FLAG_START and re.search(r'\bNetwork\s*:', line):
+        # Nova rota: linha (possivelmente com espaço inicial) tem flag + "Network :"
+        # Alguns VRP imprimem " *>  Network  :" com espaço antes da flag.
+        stripped = line.lstrip()
+        if stripped and stripped[0] in _ROUTE_FLAG_START and re.search(r'\bNetwork\s*:', line):
             if cur:
                 routes.append(_kv_to_route(cur))
-            fm = re.match(r'^([*>idshSe?][*>idshSe? ]*)', line)
+            fm = re.match(r'^\s*([*>idshSe?][*>idshSe? ]*)', line)
             flags = fm.group(1).strip() if fm else ""
             nm = re.search(r'\bNetwork\s*:\s*(\S*)', line)
             pm = re.search(r'\bPrefixLen\s*:\s*(\d+)', line)
@@ -459,18 +461,36 @@ class BgpPeerDetailDialog(QDialog):
         is6  = self._is_ipv6
 
         def fetch():
+            # Verbose: tenta com 'ipv6' keyword; cai para sem caso retorne vazio
             verb_cmd = (
                 f"display bgp ipv6 peer {peer} verbose" if is6
                 else f"display bgp peer {peer} verbose"
             )
             verbose = self._session.run(verb_cmd, timeout=15.0)
-            # Route-policy vem da configuração ativa
-            try:
-                cfg = self._session.run(
-                    f"display current-configuration bgp | include {peer}",
-                    timeout=10.0)
-            except Exception:
-                cfg = ""
+            if is6 and (not verbose.strip() or
+                        re.search(r"Error:|Unrecognized|\^", verbose)):
+                try:
+                    verbose = self._session.run(
+                        f"display bgp peer {peer} verbose", timeout=15.0)
+                except Exception:
+                    pass
+
+            # Route-policy: 'bgp' subsection nem sempre é suportado —
+            # tenta duas variantes e usa a que trouxer dados úteis.
+            cfg = ""
+            for cfg_cmd in [
+                f"display current-configuration bgp | include {peer}",
+                f"display current-configuration | include {peer}",
+            ]:
+                try:
+                    result = self._session.run(cfg_cmd, timeout=10.0)
+                    if result and not re.search(
+                            r"^\s*\^|Error:|Unrecognized command",
+                            result, re.MULTILINE):
+                        cfg = result
+                        break
+                except Exception:
+                    pass
             return verbose, cfg
 
         def done(result):
