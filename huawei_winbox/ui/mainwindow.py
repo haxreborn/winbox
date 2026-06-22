@@ -71,7 +71,7 @@ _MENU = [
     ("PPPoE / BAS", PppoePanel),
     ("NAT", NatPanel),
     ("ACL / Firewall", AclPanel),
-    ("Firewall / NAT (avançado)", FirewallPanel),
+    ("Firewall / NAT", FirewallPanel),
     ("Usuários", UsersPanel),
     ("Vizinhos (LLDP)", LldpPanel),
     ("Serviços", ServicesPanel),

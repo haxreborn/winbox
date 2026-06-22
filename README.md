@@ -39,7 +39,7 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
   | PPPoE / BAS | assinantes online (`display access-user`) com filtro e desconexão (`cut access-user`), domínios AAA, pools de assinante e criação de Virtual-Template/acesso BAS — como o *PPP* do WinBox |
   | NAT | NAT de saída (easy-ip por ACL) e redirecionamento de portas (NAT server) |
   | ACL / Firewall | regras permit/deny, aplicar `traffic-filter` nas interfaces |
-  | Firewall / NAT (avançado) | editor rule-by-rule de ACL, traffic-policy (MQC: classifier/behavior/policy) e NAT, com **assistente de CGNAT** (cadeia ACL→redirect ip-nexthop→policy global) usada nos NE8000 |
+  | Firewall / NAT | editor rule-by-rule de ACL, traffic-policy (MQC: classifier/behavior/policy) e NAT, com **assistente de CGNAT** (cadeia ACL→redirect ip-nexthop→policy global) usada nos NE8000 |
   | Usuários | contas locais AAA: criar/remover, privilégio e serviços (protege o usuário da sessão) |
   | Vizinhos (LLDP) | descoberta de equipamentos conectados, como o *Neighbors* do WinBox |
   | Serviços | NTP, comunidade SNMP v2c, SSH (STelnet) e LLDP |

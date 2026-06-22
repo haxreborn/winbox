@@ -1,4 +1,4 @@
-"""Painel Firewall / NAT (avançado) — editor rule-by-rule de ACL,
+"""Painel Firewall / NAT — editor rule-by-rule de ACL,
 traffic-policy (MQC) e NAT, com assistente de CGNAT por redirecionamento.
 
 Abas:
@@ -62,7 +62,7 @@ class FirewallPanel(QWidget):
 
         top = QHBoxLayout()
         top.addWidget(QLabel(
-            "<b>Firewall / NAT (avançado)</b> — ACL, traffic-policy (MQC) "
+            "<b>Firewall / NAT</b> — ACL, traffic-policy (MQC) "
             "e NAT, regra a regra. Inclui assistente de CGNAT."))
         top.addStretch(1)
         self.status_lbl = QLabel("")

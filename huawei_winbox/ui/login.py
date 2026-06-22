@@ -1,11 +1,10 @@
 """Janela de conexão — réplica fiel da tela inicial do WinBox.
 
 Barra de menus (File / Tools), formulário *Connect To / Login / Password*
-com as caixas de seleção à direita (Keep Password / Open In New Window /
-Auto Reconnect), a fileira de botões (Add/Set · Connect To RoMON ·
-Connect) e, embaixo, as abas *Managed / Neighbors* com a barra de
-ferramentas (filtro, Set Master Password, Find, all) e a lista de
-equipamentos salvos.
+com a caixa de seleção *Keep Password* à direita, a fileira de botões
+(Add/Set · Connect) e, embaixo, a lista *Managed* com a barra de
+ferramentas (filtro, Set Master Password, Find, all) e os equipamentos
+salvos.
 
 Quando o equipamento EXIGE a troca da senha no primeiro acesso (e recusar
 com "N" derruba a sessão), um modal pede a nova senha e a conexão é
@@ -167,10 +166,6 @@ class LoginWindow(QWidget):
         add_btn.clicked.connect(self._add_set)
         btns.addWidget(add_btn)
         btns.addStretch(1)
-        romon = QPushButton("Connect To RoMON")
-        romon.setEnabled(False)
-        romon.setToolTip("Recurso exclusivo do WinBox/MikroTik.")
-        btns.addWidget(romon)
         self.connect_btn = QPushButton("Connect")
         self.connect_btn.setDefault(True)
         self.connect_btn.clicked.connect(self._connect_clicked)
