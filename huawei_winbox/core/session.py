@@ -166,7 +166,7 @@ class HuaweiSession:
         if self.two_stage:
             try:
                 self.run("system-view")
-                probe = self.run("commit trial 1")
+                probe = self.run("commit trial 60")
                 if "Error" not in probe and "nknown command" not in probe:
                     self.supports_safe_mode = True
                     # Encerra o trial imediatamente (sem alterações pendentes
