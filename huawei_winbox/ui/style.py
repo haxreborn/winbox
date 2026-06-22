@@ -6,7 +6,21 @@ tema do sistema operacional é escuro (caso contrário o Qt herda texto
 branco sobre os fundos claros e nada fica visível).
 """
 
-WINBOX_QSS = """
+import tempfile
+
+_CHECK_SVG = (
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 13 13'>"
+    "<rect width='13' height='13' rx='2' fill='#316ac5'/>"
+    "<polyline points='2,7 5,10 11,3' stroke='white' stroke-width='2.2' "
+    "fill='none' stroke-linecap='round' stroke-linejoin='round'/>"
+    "</svg>"
+)
+_tmp = tempfile.NamedTemporaryFile(suffix=".svg", delete=False, mode="w")
+_tmp.write(_CHECK_SVG)
+_tmp.flush()
+_CHECK_PATH = _tmp.name.replace("\\", "/")
+
+_QSS_TEMPLATE = """
 * {
     font-size: 12px;
     color: #1c1c1c;
@@ -59,6 +73,20 @@ QComboBox QAbstractItemView {
 }
 
 QCheckBox, QLabel, QRadioButton { color: #1c1c1c; background: transparent; }
+
+QCheckBox::indicator {
+    width: 13px;
+    height: 13px;
+    border: 1px solid #7a8a9a;
+    border-radius: 2px;
+    background: #ffffff;
+}
+QCheckBox::indicator:hover  { border-color: #316ac5; }
+QCheckBox::indicator:checked {
+    border-color: #1d4e9e;
+    image: url(__CHECK_PATH__);
+}
+QCheckBox::indicator:disabled { background: #e0e0e0; border-color: #b8b8b8; }
 
 QTableWidget, QTreeWidget, QListWidget {
     background: #ffffff;
@@ -259,3 +287,5 @@ QLineEdit#findBox {
 }
 QLabel#itemCount { color: #3a4a5a; }
 """
+
+WINBOX_QSS = _QSS_TEMPLATE.replace("__CHECK_PATH__", _CHECK_PATH)
