@@ -8,18 +8,6 @@ branco sobre os fundos claros e nada fica visível).
 
 import tempfile
 
-_CHECK_SVG = (
-    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 13 13'>"
-    "<rect width='13' height='13' rx='2' fill='#316ac5'/>"
-    "<polyline points='2,7 5,10 11,3' stroke='white' stroke-width='2.2' "
-    "fill='none' stroke-linecap='round' stroke-linejoin='round'/>"
-    "</svg>"
-)
-_tmp = tempfile.NamedTemporaryFile(suffix=".svg", delete=False, mode="w")
-_tmp.write(_CHECK_SVG)
-_tmp.flush()
-_CHECK_PATH = _tmp.name.replace("\\", "/")
-
 _QSS_TEMPLATE = """
 * {
     font-size: 12px;
@@ -288,4 +276,48 @@ QLineEdit#findBox {
 QLabel#itemCount { color: #3a4a5a; }
 """
 
-WINBOX_QSS = _QSS_TEMPLATE.replace("__CHECK_PATH__", _CHECK_PATH)
+# Filled after QApplication is created (QPainter requires it).
+_check_png_path: str = ""
+
+
+def build_winbox_qss() -> str:
+    """Gera o QSS final — deve ser chamado APÓS QApplication().
+
+    Renderiza o checkmark com QPainter, salva como PNG temporário e injeta
+    o caminho no template. Retorna também WINBOX_QSS para uso global.
+    """
+    global _check_png_path, WINBOX_QSS
+    if not _check_png_path:
+        from PySide6.QtGui import (
+            QImage, QPainter, QPen, QColor, QPolygonF,
+        )
+        from PySide6.QtCore import QPointF, Qt
+
+        img = QImage(13, 13, QImage.Format_ARGB32)
+        img.fill(QColor("#316ac5"))
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor("#ffffff"), 2.2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawPolyline(QPolygonF([
+            QPointF(2, 7), QPointF(5, 10), QPointF(11, 3),
+        ]))
+        p.end()
+
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=".png", delete=False, mode="wb")
+        img.save(tmp.name, "PNG")
+        tmp.close()
+        _check_png_path = tmp.name.replace("\\", "/")
+
+    qss = _QSS_TEMPLATE.replace("__CHECK_PATH__", _check_png_path)
+    WINBOX_QSS = qss
+    return qss
+
+
+# Fallback (sem checkmark image) para importações directas — substituído
+# em main() pela versão com PNG.
+WINBOX_QSS = _QSS_TEMPLATE.replace("__CHECK_PATH__", "")
