@@ -24,10 +24,9 @@ _CONFIRM_RE = re.compile(r"\[\s*Y\s*/\s*N\s*\]\s*:?\s*$|\(y/n\)\s*:?\s*$",
                          re.IGNORECASE)
 # Exceção: o aviso de troca de senha que aparece logo após o login
 # ("Warning: The initial password poses security risks. ... Change now?
-# [Y/N]:") DEVE ser respondido com "N". Responder "Y" jogaria a sessão no
-# fluxo de definição de uma nova senha — o login travaria aguardando a
-# digitação (ou, pior, alteraria a senha do equipamento). Detectado pelo
-# texto que acompanha o "[Y/N]" (em inglês e português).
+# [Y/N]:"). Se new_password estiver definido, respondemos "Y" e fazemos a
+# troca; caso contrário respondemos "N" (adiar) — mas alguns equipamentos
+# não aceitam "N" e derrubam a sessão.
 _DECLINE_RE = re.compile(
     r"change\s+now"
     r"|initial password"
@@ -37,6 +36,15 @@ _DECLINE_RE = re.compile(
     r"|senha.{0,40}(?:expir|alter|troc|modific)"
     r"|(?:alter|troc|modific).{0,40}senha",
     re.IGNORECASE | re.DOTALL)
+# Prompts de entrada de senha durante a troca forçada no login.
+_PWD_OLD_RE = re.compile(
+    r"(?:old|current|original|exist[ei]ng)\s+password\s*:?\s*$"
+    r"|senha\s+(?:antiga|atual|corrente)\s*:?\s*$",
+    re.IGNORECASE)
+_PWD_NEW_RE = re.compile(
+    r"(?:new|confirm|re.?enter|repeat)\s+password\s*:?\s*$"
+    r"|(?:nova|confirm[ae]|repita?)\s*(?:r?\s+a?\s*senha)?\s*:?\s*$",
+    re.IGNORECASE)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\r|\x1b\[16D\s*\x1b\[16D")
 # Extrai o nome do equipamento do prompt detectado (captura o colchete
 # para distinguir visão de usuário <name> de visão de sistema [name-...]).
@@ -89,6 +97,11 @@ class HuaweiSession:
         # [~name] (sincronizado) ou [*name] (alterações pendentes). Quando
         # detectado, configure() envia "commit" antes de sair.
         self.two_stage = False
+        # Se definido antes de connect(), o app responde "Y" ao aviso de
+        # troca de senha obrigatória, envia a senha atual como senha antiga e
+        # esta como nova senha. Após a troca bem-sucedida, self.password é
+        # atualizado e new_password é zerado.
+        self.new_password: str = ""
         # True se o equipamento aceita "commit trial <segundos>" (detectado
         # na conexão). Apenas dispositivos two_stage podem suportar isso.
         self.supports_safe_mode = False
@@ -122,8 +135,13 @@ class HuaweiSession:
         shell.settimeout(0.5)          # timeout de recv individual (não total)
         self._client = client
         self._shell = shell
-        # Lê banner/prompt inicial — hostname é extraído aqui.
+        # Lê banner/prompt inicial — hostname é extraído aqui. Se new_password
+        # estiver definido, o loop interno trata a troca forçada de senha.
         self._read_until_prompt()
+        # Troca concluída sem exceção: atualiza a senha ativa.
+        if self.new_password:
+            self.password = self.new_password
+            self.new_password = ""
         # Desativa paginação nesta sessão.
         self.run("screen-length 0 temporary")
         # Detecta configuração em dois estágios (NE/ATN): entra e sai da
@@ -293,15 +311,29 @@ class HuaweiSession:
 
             if chunk and _CONFIRM_RE.search(last):
                 # A pergunta pode ocupar mais de uma linha (o "[Y/N]" vem
-                # no fim); olha as últimas linhas para decidir Y x N e não
-                # responder "Y" ao aviso de troca de senha do login.
+                # no fim); olha as últimas linhas para decidir Y x N.
                 window = "\n".join(lines[-8:])
-                # O prompt [Y/N] coloca o VRP em modo de leitura de
-                # caractere (raw). Nesse modo apenas \r sinaliza "Enter";
-                # enviar só \n faz o equipamento ecoar o caractere mas não
-                # confirmar a escolha — a sessão fica esperando o \r.
-                self._shell.send(confirm_answer(window) + "\r")
-                deadline = time.time() + t   # janela fresca para a resposta
+                if _DECLINE_RE.search(window):
+                    # Aviso de troca de senha: Y se temos nova senha, N para adiar.
+                    answer = "Y" if self.new_password else "N"
+                else:
+                    answer = "Y"
+                # [Y/N] usa modo raw no VRP — apenas \r funciona como Enter.
+                self._shell.send(answer + "\r")
+                deadline = time.time() + t
+                time.sleep(0.1)
+                continue
+
+            # Prompts de entrada de senha durante a troca forçada no login.
+            if chunk and _PWD_OLD_RE.search(last):
+                self._shell.send(self.password + "\r")
+                deadline = time.time() + t
+                time.sleep(0.1)
+                continue
+
+            if chunk and self.new_password and _PWD_NEW_RE.search(last):
+                self._shell.send(self.new_password + "\r")
+                deadline = time.time() + t
                 time.sleep(0.1)
                 continue
 

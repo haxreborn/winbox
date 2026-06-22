@@ -56,6 +56,18 @@ class LoginWindow(QWidget):
         self.password.setEchoMode(QLineEdit.Password)
         grid.addWidget(self.password, 1, 3)
 
+        lbl_new = QLabel("Nova senha:")
+        lbl_new.setToolTip(
+            "Preencha APENAS se o equipamento exigir troca de senha no login\n"
+            "(mensagem 'The password needs to be changed').\n"
+            "Deixe vazio para conexões normais.")
+        grid.addWidget(lbl_new, 2, 2)
+        self.new_password = QLineEdit()
+        self.new_password.setEchoMode(QLineEdit.Password)
+        self.new_password.setPlaceholderText("deixe vazio se não for trocar")
+        self.new_password.setToolTip(lbl_new.toolTip())
+        grid.addWidget(self.new_password, 2, 3)
+
         root.addLayout(grid)
 
         opts = QHBoxLayout()
@@ -144,6 +156,7 @@ class LoginWindow(QWidget):
 
         session = HuaweiSession(host, username, self.password.text(),
                                 port=self.port.value())
+        session.new_password = self.new_password.text().strip()
 
         def connect():
             session.connect()
@@ -157,10 +170,13 @@ class LoginWindow(QWidget):
                 name=session.hostname,
                 host=session.host,
                 username=session.username,
+                # session.password já é a nova senha se houve troca.
                 password=session.password,
                 port=session.port,
                 save_password=self.save_pwd_check.isChecked(),
             ))
+        # Limpa o campo de nova senha para não ficar preenchido na próxima vez.
+        self.new_password.clear()
         self.connect_btn.setEnabled(True)
         self.status.setText("")
         self.connected.emit(session)
