@@ -270,6 +270,7 @@ _MENU_ICON = {
     "QoS": ("sliders", ORANGE),
     "Segurança L2": ("lock", RED),
     "Servidor DHCP": ("gear", BLUE),
+    "PPPoE / BAS": ("user", INDIGO),
     "NAT": ("swap", TEAL),
     "ACL / Firewall": ("shield", RED),
     "Usuários": ("user", SLATE),

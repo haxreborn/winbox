@@ -956,3 +956,93 @@ def parse_qos_policies(text: str) -> list[dict]:
         rows.append({"type": "—", "name": "Nenhuma política aplicada",
                      "detail": "", "applied": ""})
     return rows
+
+
+# ──────────────────────────────────────────────────────────────────────────── #
+# BRAS / PPPoE (NE8000) — assinantes, domínios
+# ──────────────────────────────────────────────────────────────────────────── #
+_MAC_RE = re.compile(r"[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}")
+_IPV4_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
+
+
+def parse_access_users(text: str) -> list[dict]:
+    """``display access-user`` -> [{userid, username, ip, mac, interface, domain}]
+
+    Os assinantes de banda larga (PPPoE/IPoE) aparecem em formatos que
+    variam bastante entre versões do VRP. Em vez de depender de colunas
+    fixas, ancora cada linha na presença simultânea de um MAC
+    (xxxx-xxxx-xxxx) e de um IPv4 — assim funciona na maioria dos layouts.
+    Nomes longos fazem o VRP quebrar a linha (UserID/Username numa linha,
+    IP/MAC/interface na seguinte); essas linhas são reunidas.
+    """
+    rows = []
+    pending_user = ""
+    pending_id = ""
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or re.match(r"^[-=]+$", s):
+            continue
+        if re.search(r"UserID|User[\s-]?name|Total|Domain|Access interface",
+                     s, re.I):
+            continue
+        toks = s.split()
+        mac = _MAC_RE.search(s)
+        ip = _IPV4_RE.search(s)
+        if not (mac and ip):
+            # Linha "enrolada": guarda userid e/ou username para a próxima.
+            if toks and toks[0].isdigit():
+                pending_id = toks[0]
+            cand = next((t for t in toks if "@" in t), "")
+            if not cand:
+                cand = next((t for t in toks
+                            if not t.isdigit() and re.match(r"^[\w@.\-]+$", t)),
+                            "")
+            if cand:
+                pending_user = cand
+            continue
+        ip_val = ip.group(0)
+        userid = toks[0] if toks and toks[0].isdigit() else pending_id
+        try:
+            ip_idx = toks.index(ip_val)
+        except ValueError:
+            ip_idx = -1
+        username = toks[ip_idx - 1] if ip_idx >= 1 else ""
+        if (not username or _MAC_RE.fullmatch(username)
+                or username in (ip_val, userid)):
+            username = pending_user or username
+        interface = toks[-1] if toks else ""
+        domain = username.split("@", 1)[1] if "@" in username else ""
+        rows.append({
+            "userid": userid,
+            "username": username,
+            "ip": ip_val,
+            "mac": mac.group(0),
+            "interface": expand_iface_name(interface),
+            "domain": domain,
+        })
+        pending_user = ""
+        pending_id = ""
+    return rows
+
+
+def parse_domains(text: str) -> list[dict]:
+    """``display domain`` -> [{name, state}] (domínios AAA / perfis BRAS)."""
+    rows = []
+    state_re = re.compile(r"^(\S+)\s+(Active|Block(?:ed)?|Inactive)\b", re.I)
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or re.match(r"^[-=]+$", s):
+            continue
+        if re.search(r"Domain[\s-]?name|Total|^\s*State\b", s, re.I):
+            continue
+        m = state_re.match(s)
+        if m:
+            rows.append({"name": m.group(1), "state": m.group(2)})
+    # Fallback: versões que listam só o nome do domínio, sem coluna de estado.
+    if not rows:
+        for line in text.splitlines():
+            s = line.strip()
+            m = re.match(r"^([A-Za-z][\w.\-]{1,63})$", s)
+            if m and not re.search(r"total|domain|state", s, re.I):
+                rows.append({"name": m.group(1), "state": ""})
+    return rows

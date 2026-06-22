@@ -1340,3 +1340,92 @@ def ip_community_filter(filter_name: str, index: int,
     if remove:
         return [f"undo ip community-filter {filter_name} index {index}"]
     return [f"ip community-filter {filter_name} index {index} {action} {community}"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BRAS / PPPoE (NE8000) — domínios, interfaces de acesso, Virtual-Template,
+# pools de assinante e desconexão de usuários online.
+# ─────────────────────────────────────────────────────────────────────────────
+def bras_domain(name: str, auth_scheme: str = "", acct_scheme: str = "",
+                radius_group: str = "", ip_pool: str = "",
+                ipv6_pool: str = "", remove: bool = False) -> list[str]:
+    """Cria/edita um domínio AAA (o "profile" do assinante)."""
+    if remove:
+        return ["aaa", f"undo domain {name}", "quit"]
+    cmds = ["aaa", f"domain {name}"]
+    if auth_scheme.strip():
+        cmds.append(f"authentication-scheme {auth_scheme.strip()}")
+    if acct_scheme.strip():
+        cmds.append(f"accounting-scheme {acct_scheme.strip()}")
+    if radius_group.strip():
+        cmds.append(f"radius-server group {radius_group.strip()}")
+    if ip_pool.strip():
+        cmds.append(f"ip-pool {ip_pool.strip()}")
+    if ipv6_pool.strip():
+        cmds.append(f"ipv6-pool {ipv6_pool.strip()}")
+    cmds.extend(["quit", "quit"])
+    return cmds
+
+
+def bras_access_interface(interface: str, user_vlan: str, domain: str,
+                          remove: bool = False) -> list[str]:
+    """Habilita acesso PPPoE/IPoE (BAS layer2-subscriber) numa sub-interface."""
+    cmds = [f"interface {interface}"]
+    if remove:
+        cmds.extend(["undo bas", "quit"])
+        return cmds
+    if user_vlan.strip():
+        cmds.append(f"user-vlan {user_vlan.strip()}")
+    cmds.append("bas")
+    cmds.append("access-type layer2-subscriber "
+                f"default-domain authentication {domain}")
+    cmds.extend(["quit", "quit"])
+    return cmds
+
+
+def pppoe_server_template(template_id: int, ac_name: str = "",
+                          service_name: str = "", auth_mode: str = "pap",
+                          remove: bool = False) -> list[str]:
+    """Cria um Virtual-Template servidor PPPoE."""
+    if remove:
+        return [f"undo interface Virtual-Template{template_id}"]
+    cmds = [f"interface Virtual-Template{template_id}",
+            f"ppp authentication-mode {auth_mode}"]
+    if ac_name.strip():
+        cmds.append(f"pppoe-server ac-name {ac_name.strip()}")
+    if service_name.strip():
+        cmds.append(f"pppoe-server service-name-parameter {service_name.strip()}")
+    cmds.append("quit")
+    return cmds
+
+
+def bras_ip_pool(name: str, gateway: str, mask: str, start: str, end: str,
+                 dns: str = "", remove: bool = False) -> list[str]:
+    """Pool de endereços de assinante (``ip pool <name> bas local``)."""
+    if remove:
+        return [f"undo ip pool {name}"]
+    cmds = [f"ip pool {name} bas local",
+            f"gateway {gateway} {mask}",
+            f"section 0 {start} {end}"]
+    if dns.strip():
+        cmds.append(f"dns-server {dns.strip()}")
+    cmds.append("quit")
+    return cmds
+
+
+def cut_access_user(by: str, value: str) -> list[str]:
+    """Desconecta assinante(s) online. by: 'username'|'domain'|'interface'."""
+    return [f"cut access-user {by} {value}"]
+
+
+def local_ppp_user(username: str, password: str,
+                   remove: bool = False) -> list[str]:
+    """Conta PPPoE local (equivalente ao 'Secrets' do WinBox)."""
+    if remove:
+        return ["aaa", f"undo local-user {username}", "quit"]
+    return [
+        "aaa",
+        f"local-user {username} password irreversible-cipher {password}",
+        f"local-user {username} service-type ppp",
+        "quit",
+    ]

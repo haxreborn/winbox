@@ -36,6 +36,7 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
   | OSPF | vizinhanças (`display ospf peer brief`), habilitar processo, redes por área |
   | MPLS / LDP | sessões LDP, habilitar MPLS+LDP global e por interface |
   | Servidor DHCP | pools (`display ip pool`), criar/remover pool, ativar por interface |
+  | PPPoE / BAS | assinantes online (`display access-user`) com filtro e desconexão (`cut access-user`), domínios AAA, pools de assinante e criação de Virtual-Template/acesso BAS — como o *PPP* do WinBox |
   | NAT | NAT de saída (easy-ip por ACL) e redirecionamento de portas (NAT server) |
   | ACL / Firewall | regras permit/deny, aplicar `traffic-filter` nas interfaces |
   | Usuários | contas locais AAA: criar/remover, privilégio e serviços (protege o usuário da sessão) |

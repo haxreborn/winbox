@@ -31,6 +31,7 @@ from .panels.bgp import BgpPanel
 from .panels.ospf import OspfPanel
 from .panels.mpls import MplsPanel
 from .panels.dhcp import DhcpPanel
+from .panels.pppoe import PppoePanel
 from .panels.nat import NatPanel
 from .panels.acl import AclPanel
 from .panels.users import UsersPanel
@@ -66,6 +67,7 @@ _MENU = [
     ("QoS", QosPanel),
     ("Segurança L2", PortSecurityPanel),
     ("Servidor DHCP", DhcpPanel),
+    ("PPPoE / BAS", PppoePanel),
     ("NAT", NatPanel),
     ("ACL / Firewall", AclPanel),
     ("Usuários", UsersPanel),
