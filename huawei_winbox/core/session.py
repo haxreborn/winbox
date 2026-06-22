@@ -268,7 +268,8 @@ class HuaweiSession:
             last = lines[-1]
 
             if _MORE_RE.search(last):
-                self._shell.send(" ")
+                self._shell.send(" ")   # space avança a página
+                deadline = time.time() + t
                 time.sleep(0.05)
                 continue
 
@@ -277,8 +278,13 @@ class HuaweiSession:
                 # no fim); olha as últimas linhas para decidir Y x N e não
                 # responder "Y" ao aviso de troca de senha do login.
                 window = "\n".join(lines[-8:])
-                self._shell.send(confirm_answer(window) + "\n")
-                time.sleep(0.05)
+                # O prompt [Y/N] coloca o VRP em modo de leitura de
+                # caractere (raw). Nesse modo apenas \r sinaliza "Enter";
+                # enviar só \n faz o equipamento ecoar o caractere mas não
+                # confirmar a escolha — a sessão fica esperando o \r.
+                self._shell.send(confirm_answer(window) + "\r\n")
+                deadline = time.time() + t   # janela fresca para a resposta
+                time.sleep(0.1)
                 continue
 
             if _PROMPT_RE.search(tail):
