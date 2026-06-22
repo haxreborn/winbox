@@ -246,8 +246,8 @@ class MainWindow(QMainWindow):
         self.safe_btn = QPushButton("Safe Mode")
         self.safe_btn.setObjectName("safeMode")
         self.safe_btn.setCheckable(True)
-        self.safe_btn.setEnabled(session.supports_safe_mode)
-        if session.supports_safe_mode:
+        self.safe_btn.setEnabled(self.session.supports_safe_mode)
+        if self.session.supports_safe_mode:
             self.safe_btn.setToolTip(
                 "Ativo: cada alteração usa 'commit trial 600'.\n"
                 "A config candidata é revertida automaticamente após 10 min\n"
