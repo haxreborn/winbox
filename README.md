@@ -19,6 +19,7 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
   | Módulo | O que faz |
   |---|---|
   | Interfaces | lista (`display interface brief`), habilitar/desabilitar, descrição, IP, MTU |
+  | Tráfego (gráfico) | gráfico em tempo real de consumo de banda (RX/TX) por interface, com histórico do tempo em que a janela está aberta; fonte **CLI (SSH)** ou **SNMP** |
   | Endereços IP | visão `display ip interface brief`, adicionar/remover IPs |
   | VLANs | criar/remover VLAN, porta em modo *access* e *trunk* |
   | Rotas | tabela de roteamento, criar/remover rotas estáticas |
@@ -42,6 +43,28 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
   e `return`), com opção de copiar ou cancelar — nada é enviado sem o seu OK.
 - **Tudo assíncrono**: as consultas SSH rodam em threads; a janela nunca
   congela.
+
+## Gráfico de tráfego e SNMP
+
+O módulo **Tráfego (gráfico)** desenha o consumo de banda (RX/TX) da
+interface escolhida enquanto a janela fica aberta — um gráfico estilo
+*Traffic* do WinBox, com escala automática e legenda de valor atual/pico.
+O histórico fica em memória (vinculado à sessão) e sobrevive ao fechar e
+reabrir o painel. Há duas fontes de dados:
+
+- **CLI (SSH)** — lê a taxa que o próprio equipamento informa
+  (`display interface <nome>`). Funciona sem nenhuma configuração extra
+  além do SSH.
+- **SNMP** — lê os contadores de octetos (`ifHCInOctets`/`ifHCOutOctets`,
+  com queda para os de 32 bits) e calcula a taxa entre as amostras. **Exige
+  que o agente SNMP já esteja habilitado no equipamento** (use o módulo
+  *SNMP* para isso); a comunidade e a porta são informadas no próprio
+  painel, e o botão **Testar SNMP** confirma o acesso lendo `sysName`,
+  `sysUpTime` e `sysDescr`.
+
+O cliente SNMP v2c é implementado internamente (codificação BER própria),
+então **não há dependências novas** — o projeto continua usando apenas
+PySide6 e paramiko.
 
 ## Instalação
 
@@ -73,6 +96,8 @@ huawei_winbox/
 │   ├── session.py           # sessão SSH persistente (paramiko) com o VRP
 │   ├── translator.py        # cliques -> comandos CLI do VRP
 │   ├── parsers.py           # saída dos "display ..." -> tabelas
+│   ├── snmp.py              # cliente SNMP v2c próprio (BER) — só leitura
+│   ├── history.py           # histórico de tráfego em memória (por sessão)
 │   └── profiles.py          # equipamentos salvos (~/.huaweibox)
 └── ui/
     ├── login.py             # tela de conexão estilo WinBox
@@ -81,7 +106,8 @@ huawei_winbox/
     ├── forms.py             # formulários genéricos
     ├── worker.py            # execução SSH fora da thread da UI
     ├── style.py             # tema visual (QSS)
-    └── panels/              # Interfaces, VLANs, Rotas, BGP, OSPF, MPLS...
+    ├── widgets/             # widgets reutilizáveis (gráfico de tráfego)
+    └── panels/              # Interfaces, Tráfego, VLANs, BGP, OSPF, MPLS...
 ```
 
 ## Avisos
@@ -90,9 +116,16 @@ huawei_winbox/
   então os textos permanecem legíveis mesmo com o sistema operacional em
   modo escuro.
 
-- Testado contra a sintaxe do VRP clássico (séries AR, NE, S). Versões
-  diferentes podem variar em alguns `display`; os parsers ignoram linhas
-  desconhecidas em vez de quebrar.
+- Testado contra a sintaxe do VRP clássico (séries AR, NE, S) e contra a
+  V800 (NE8000), que usa configuração em dois estágios (a sessão envia
+  `commit` automaticamente quando o prompt aparece como `[~nome]`/`[*nome]`).
+  Versões diferentes podem variar em alguns `display`; os parsers ignoram
+  linhas desconhecidas em vez de quebrar.
+- **Login com aviso de senha**: alguns equipamentos exibem, logo após o
+  SSH, `The password needs to be changed. Change now? [Y/N]:`. O
+  aplicativo responde **N** automaticamente (segue para o prompt sem trocar
+  a senha). As demais confirmações `[Y/N]` (como `save`) continuam sendo
+  respondidas com **Y**.
 - A opção "Lembrar senha" grava a senha apenas ofuscada (base64) no disco;
   em ambientes sensíveis, deixe desmarcada.
 - Configurações aplicadas **não são gravadas na flash automaticamente** —

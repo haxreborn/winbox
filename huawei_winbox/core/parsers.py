@@ -79,14 +79,16 @@ def format_bps(bps: int) -> str:
     return f"{bps} bps"
 
 
-def parse_interface_rates(text: str) -> dict[str, tuple[str, str]]:
-    """``display interface`` (todas) -> {nome: (rx, tx)} em Mbps/Gbps.
+def parse_interface_rates_bps(text: str) -> dict[str, tuple[int, int]]:
+    """``display interface`` (uma ou todas) -> {nome: (rx_bps, tx_bps)}.
 
-    Percorre o dump completo associando cada bloco "X current state" às
-    linhas "input rate ... bits/sec" / "output rate ... bits/sec" que o
-    seguem ("Last 300 seconds input rate", "300 seconds output rate"...).
+    Percorre o dump associando cada bloco "X current state" às linhas
+    "input rate ... bits/sec" / "output rate ... bits/sec" que o seguem
+    ("Last 300 seconds input rate", "300 seconds output rate"...). Retorna
+    os valores BRUTOS em bits/s (inteiros) — base numérica do gráfico de
+    tráfego. ``parse_interface_rates`` formata isto para exibição.
     """
-    rates: dict[str, tuple[str, str]] = {}
+    rates: dict[str, tuple[int, int]] = {}
     current = ""
     rx = tx = -1
     state_re = re.compile(rf"^({_IFACE_NAME}) current state\s*:", re.I)
@@ -95,8 +97,7 @@ def parse_interface_rates(text: str) -> dict[str, tuple[str, str]]:
 
     def flush():
         if current and rx >= 0 and tx >= 0:
-            rates[expand_iface_name(current)] = (format_bps(rx),
-                                                 format_bps(tx))
+            rates[expand_iface_name(current)] = (rx, tx)
 
     for line in text.splitlines():
         s = line.strip()
@@ -114,6 +115,12 @@ def parse_interface_rates(text: str) -> dict[str, tuple[str, str]]:
             tx = int(m.group(1).replace(",", ""))
     flush()
     return rates
+
+
+def parse_interface_rates(text: str) -> dict[str, tuple[str, str]]:
+    """``display interface`` (todas) -> {nome: (rx, tx)} em Mbps/Gbps."""
+    return {name: (format_bps(rx), format_bps(tx))
+            for name, (rx, tx) in parse_interface_rates_bps(text).items()}
 
 
 def parse_interface_detail(text: str) -> dict:

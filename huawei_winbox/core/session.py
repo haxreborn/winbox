@@ -17,11 +17,26 @@ import paramiko
 _PROMPT_RE = re.compile(r"[<\[]\S[^<>\[\]\r\n]{0,79}[>\]]\s*$")
 # Paginação ("---- More ----") caso screen-length não tenha sido aplicado.
 _MORE_RE = re.compile(r"-+\s*[Mm]ore\s*-+")
-# Pergunta de confirmação do VRP ("Continue? [Y/N]:") — respondida com "y"
+# Pergunta de confirmação do VRP ("Continue? [Y/N]:") — respondida
 # automaticamente; sem isso, comandos como "peer X ignore" ou "save"
 # ficariam parados até estourar o timeout.
 _CONFIRM_RE = re.compile(r"\[\s*Y\s*/\s*N\s*\]\s*:?\s*$|\(y/n\)\s*:?\s*$",
                          re.IGNORECASE)
+# Exceção: o aviso de troca de senha que aparece logo após o login
+# ("Warning: The initial password poses security risks. ... Change now?
+# [Y/N]:") DEVE ser respondido com "N". Responder "Y" jogaria a sessão no
+# fluxo de definição de uma nova senha — o login travaria aguardando a
+# digitação (ou, pior, alteraria a senha do equipamento). Detectado pelo
+# texto que acompanha o "[Y/N]" (em inglês e português).
+_DECLINE_RE = re.compile(
+    r"change\s+now"
+    r"|initial password"
+    r"|poses security"
+    r"|password.{0,40}(?:expir|chang)"
+    r"|(?:expir|chang).{0,40}password"
+    r"|senha.{0,40}(?:expir|alter|troc|modific)"
+    r"|(?:alter|troc|modific).{0,40}senha",
+    re.IGNORECASE | re.DOTALL)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\r|\x1b\[16D\s*\x1b\[16D")
 # Extrai o nome do equipamento do prompt detectado (captura o colchete
 # para distinguir visão de usuário <name> de visão de sistema [name-...]).
@@ -29,6 +44,16 @@ _HOSTNAME_RE = re.compile(r"([<\[])([^<>\[\]\r\n]+)[>\]]")
 
 # Comandos que podem demorar bem mais que o timeout padrão.
 _LONG_TIMEOUT = 90.0   # ping, traceroute, logbuffer extenso
+
+
+def confirm_answer(window: str) -> str:
+    """Decide a resposta de uma confirmação ``[Y/N]`` do VRP.
+
+    Recebe o trecho de texto que acompanha o prompt (as últimas linhas
+    recebidas). Retorna ``"N"`` para o aviso de troca de senha do login e
+    ``"Y"`` para qualquer outra confirmação (save, peer ignore, etc.).
+    """
+    return "N" if _DECLINE_RE.search(window) else "Y"
 
 
 class SSHError(Exception):
@@ -219,7 +244,11 @@ class HuaweiSession:
                 continue
 
             if chunk and _CONFIRM_RE.search(last):
-                self._shell.send("y\n")
+                # A pergunta pode ocupar mais de uma linha (o "[Y/N]" vem
+                # no fim); olha as últimas linhas para decidir Y x N e não
+                # responder "Y" ao aviso de troca de senha do login.
+                window = "\n".join(lines[-8:])
+                self._shell.send(confirm_answer(window) + "\n")
                 time.sleep(0.05)
                 continue
 

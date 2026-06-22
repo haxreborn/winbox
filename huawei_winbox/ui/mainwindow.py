@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from ..core.session import HuaweiSession
 from .panels.interfaces import InterfacesPanel
+from .panels.traffic import TrafficPanel
 from .panels.addresses import AddressesPanel
 from .panels.vlans import VlansPanel
 from .panels.routes import RoutesPanel
@@ -41,6 +42,7 @@ from .panels.mactable import MacTablePanel
 
 _MENU = [
     ("Interfaces", InterfacesPanel),
+    ("Tráfego (gráfico)", TrafficPanel),
     ("Endereços IP", AddressesPanel),
     ("VLANs", VlansPanel),
     ("Tabela MAC", MacTablePanel),
