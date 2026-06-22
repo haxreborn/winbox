@@ -13,6 +13,14 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
 - **Tela de conexão estilo WinBox** — endereço, usuário, senha e a lista de
   equipamentos salvos (duplo clique conecta). Os perfis ficam em
   `~/.huaweibox/devices.json`.
+- **Casca visual idêntica ao WinBox**: barra de menus
+  (Sessão / Configurações / Janelas / Ajuda), barra de ferramentas com
+  *Safe Mode*, identificação da sessão e **indicadores de Memória/CPU ao
+  vivo** (quadradinho que fica verde/laranja/vermelho conforme a carga),
+  faixa vertical do produto e **menu lateral com ícones**. Cada janela
+  interna tem barra de ações, caixa **Find** para filtrar a tabela e
+  contador de itens no rodapé. Os ícones são desenhados em tempo de
+  execução (sem arquivos de imagem).
 - **Janela principal com menu lateral + janelas internas (MDI)**, como no
   WinBox. Módulos disponíveis:
 

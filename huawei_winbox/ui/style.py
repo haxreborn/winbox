@@ -154,4 +154,108 @@ QLabel#connBadge {
     color: #ffffff; background: #2e8b57;
     border-radius: 2px; padding: 2px 8px; font-weight: bold;
 }
+
+/* ───────────────────────── Chrome estilo WinBox ───────────────────── */
+QMenuBar {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #f5f5f5, stop:1 #e2e2e2);
+    color: #1c1c1c;
+    border-bottom: 1px solid #b8b8b8;
+}
+QMenuBar::item { background: transparent; padding: 4px 10px; }
+QMenuBar::item:selected { background: #316ac5; color: #ffffff; }
+
+QToolBar#winToolbar {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #eef0f2, stop:1 #dde1e5);
+    border: none;
+    border-bottom: 1px solid #b4b8bd;
+    padding: 3px 6px;
+    spacing: 5px;
+}
+QToolBar#winToolbar QToolButton {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    padding: 2px 5px;
+}
+QToolBar#winToolbar QToolButton:hover {
+    background: #dcebfb; border-color: #9cc0e6;
+}
+QToolBar#winToolbar QToolButton:disabled { color: #a0a0a0; }
+
+QPushButton#safeMode {
+    padding: 3px 12px;
+    border: 1px solid #8a8a8a;
+    border-radius: 2px;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #fdfdfd, stop:1 #dadada);
+}
+QPushButton#safeMode:checked {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #cdeccd, stop:1 #95cd95);
+    border-color: #4f9a4f; color: #133f0d; font-weight: bold;
+}
+
+QLabel#sessionField {
+    background: #ffffff;
+    border: 1px solid #9aa0a6;
+    border-radius: 2px;
+    padding: 2px 8px;
+    color: #14304f;
+}
+QLabel#loadText { color: #243240; }
+
+/* Faixa vertical com o nome do produto (como "RouterOS WinBox") */
+QLabel#prodStrip {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                stop:0 #2f5fa0, stop:1 #4078c4);
+    color: #eaf2fc;
+}
+
+/* Menu lateral com ícones */
+QListWidget#sideMenu::item { padding: 7px 8px; }
+
+/* Abas (janelas internas estilo WinBox) */
+QTabWidget::pane { border: 1px solid #9aa0a6; top: -1px; background: #ececec; }
+QTabBar::tab {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #f3f3f3, stop:1 #dadada);
+    color: #1c1c1c;
+    border: 1px solid #a8acb1;
+    border-bottom: none;
+    padding: 3px 12px;
+    margin-right: 1px;
+    border-top-left-radius: 3px;
+    border-top-right-radius: 3px;
+}
+QTabBar::tab:selected { background: #ffffff; }
+QTabBar::tab:hover { background: #e6f0fb; }
+
+/* Barra de ferramentas dos painéis (+ − ✓ ✗ … Find) */
+QFrame#panelToolbar {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #f1f3f5, stop:1 #e2e5e9);
+    border: 1px solid #c2c6cb;
+    border-radius: 2px;
+}
+QFrame#panelToolbar QToolButton {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    padding: 2px 6px;
+    color: #1c1c1c;
+}
+QFrame#panelToolbar QToolButton:hover { background: #dcebfb; border-color: #9cc0e6; }
+QFrame#panelToolbar QToolButton:pressed { background: #c4dcf2; }
+QFrame#panelToolbar QToolButton:disabled { color: #9a9a9a; }
+
+QLineEdit#findBox {
+    background: #ffffff;
+    border: 1px solid #9aa0a6;
+    border-radius: 2px;
+    padding: 2px 6px 2px 6px;
+    min-width: 130px;
+}
+QLabel#itemCount { color: #3a4a5a; }
 """
