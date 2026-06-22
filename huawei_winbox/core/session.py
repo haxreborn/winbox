@@ -102,6 +102,12 @@ class HuaweiSession:
         # esta como nova senha. Após a troca bem-sucedida, self.password é
         # atualizado e new_password é zerado.
         self.new_password: str = ""
+        # Sinaliza à UI que o equipamento EXIGE a troca de senha (recusar com
+        # "N" derrubou/travou a sessão). A tela de conexão usa isto para abrir
+        # o modal de nova senha e reconectar.
+        self.password_change_required = False
+        # Interno: True entre responder "N" ao aviso e o próximo prompt/erro.
+        self._declined_change = False
         # True se o equipamento aceita "commit trial <segundos>" (detectado
         # na conexão). Apenas dispositivos two_stage podem suportar isso.
         self.supports_safe_mode = False
@@ -289,12 +295,16 @@ class HuaweiSession:
             except (OSError, EOFError) as exc:
                 # Reset/aborto da conexão (ex.: WSAECONNRESET 10054 no
                 # Windows). Sem isto, viraria um traceback cru de socket.
+                if self._declined_change:
+                    self.password_change_required = True
                 raise SSHError(_CLOSED_MSG) from exc
             if chunk:
                 parts.append(chunk.decode("utf-8", errors="replace"))
                 deadline = time.time() + t   # recebeu dados → reseta prazo
             elif self._shell.closed or self._shell.eof_received:
                 # recv vazio sem timeout ⇒ canal fechado pelo equipamento.
+                if self._declined_change:
+                    self.password_change_required = True
                 raise SSHError(_CLOSED_MSG)
 
             # Só o final interessa para detectar prompt/More/confirmação.
@@ -314,8 +324,15 @@ class HuaweiSession:
                 # no fim); olha as últimas linhas para decidir Y x N.
                 window = "\n".join(lines[-8:])
                 if _DECLINE_RE.search(window):
-                    # Aviso de troca de senha: Y se temos nova senha, N para adiar.
-                    answer = "Y" if self.new_password else "N"
+                    # Aviso de troca de senha: Y se já temos nova senha; senão
+                    # tenta "N" (adiar). Marca _declined_change para, se a
+                    # sessão cair/travar em seguida, avisar a UI que a troca
+                    # é obrigatória (abre o modal de nova senha).
+                    if self.new_password:
+                        answer = "Y"
+                    else:
+                        answer = "N"
+                        self._declined_change = True
                 else:
                     answer = "Y"
                 # [Y/N] usa modo raw no VRP — apenas \r funciona como Enter.
@@ -358,10 +375,16 @@ class HuaweiSession:
                         # Visão de sistema antes de conhecermos o sysname:
                         # usa o nome inteiro até aparecer um prompt <name>.
                         self.hostname = raw_name
+                # Chegou ao prompt: a recusa (se houve) foi aceita.
+                self._declined_change = False
                 return "".join(parts)
 
             time.sleep(0.02)
 
+        # Timeout: se acabamos de recusar a troca de senha, o equipamento
+        # provavelmente a exige — avisa a UI para abrir o modal de nova senha.
+        if self._declined_change:
+            self.password_change_required = True
         tail = _ANSI_RE.sub("", "".join(parts)[-1000:]).strip()
         extra = (f"\n\nÚltima resposta parcial do equipamento:\n"
                  f"{tail[-400:]}" if tail else
