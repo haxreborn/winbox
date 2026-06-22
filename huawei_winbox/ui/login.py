@@ -377,15 +377,23 @@ class LoginWindow(QWidget):
                                 dlg.new_password())
 
     def _on_connected(self, session: HuaweiSession):
-        # session.password já é a nova senha se houve troca obrigatória.
-        upsert_profile(DeviceProfile(
-            name=session.hostname,
-            host=session.host,
-            username=session.username,
-            password=session.password if self.keep_pwd.isChecked() else "",
-            port=session.port,
-            save_password=self.keep_pwd.isChecked(),
-        ))
+        # Se o perfil já existe na lista e a senha foi trocada de forma
+        # obrigatória, atualiza a senha salva — sem isso o perfil ficaria
+        # com a senha antiga (inválida). Não cria perfil novo automaticamente:
+        # para adicionar, o usuário deve clicar em Add/Set.
+        existing = next(
+            (p for p in self._profiles
+             if p.host == session.host and p.username == session.username),
+            None)
+        if existing and existing.save_password:
+            upsert_profile(DeviceProfile(
+                name=session.hostname,
+                host=session.host,
+                username=session.username,
+                password=session.password,
+                port=session.port,
+                save_password=True,
+            ))
         self.connect_btn.setEnabled(True)
         self.status.setText("")
         self.connected.emit(session)
