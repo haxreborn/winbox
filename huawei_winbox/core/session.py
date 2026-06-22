@@ -78,6 +78,14 @@ class HuaweiSession:
         # [~name] (sincronizado) ou [*name] (alterações pendentes). Quando
         # detectado, configure() envia "commit" antes de sair.
         self.two_stage = False
+        # True se o equipamento aceita "commit trial <segundos>" (detectado
+        # na conexão). Apenas dispositivos two_stage podem suportar isso.
+        self.supports_safe_mode = False
+        # Controlado pelo botão Safe Mode da MainWindow. Quando True e o
+        # equipamento suporta, configure() usa "commit trial 600" em vez de
+        # "commit" — a configuração candidata fica pendente por 10 min e
+        # é revertida automaticamente se não for confirmada.
+        self.safe_mode = False
 
     # ------------------------------------------------------------------ #
     def connect(self) -> None:
@@ -115,6 +123,23 @@ class HuaweiSession:
             self.run("return")
         except SSHError:
             pass
+
+        # Detecta suporte a "commit trial": só faz sentido em dispositivos
+        # two_stage. Tenta "commit trial 1" dentro da visão de sistema;
+        # se o VRP não retornar "Error", o recurso existe. O trial é
+        # imediatamente encerrado com "commit" antes de sair.
+        if self.two_stage:
+            try:
+                self.run("system-view")
+                probe = self.run("commit trial 1")
+                if "Error" not in probe and "nknown command" not in probe:
+                    self.supports_safe_mode = True
+                    # Encerra o trial imediatamente (sem alterações pendentes
+                    # isso é um no-op, mas garante estado limpo).
+                    self.run("commit", timeout=30.0)
+                self.run("return")
+            except SSHError:
+                pass
 
     @property
     def connected(self) -> bool:
@@ -204,7 +229,11 @@ class HuaweiSession:
         """
         output = self.run_many(["system-view", *commands])
         if self.two_stage:
-            output += f"\n> commit\n{self.run('commit', timeout=60.0)}"
+            if self.safe_mode and self.supports_safe_mode:
+                commit_cmd = "commit trial 600"
+            else:
+                commit_cmd = "commit"
+            output += f"\n> {commit_cmd}\n{self.run(commit_cmd, timeout=60.0)}"
         output += f"\n> return\n{self.run('return')}"
         return output
 

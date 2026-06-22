@@ -140,7 +140,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        layout.addWidget(_ProductStrip("HuaweiBox  ·  estilo WinBox"))
+        layout.addWidget(_ProductStrip("HuaweiBox"))
 
         self.menu = QListWidget()
         self.menu.setObjectName("sideMenu")
@@ -239,14 +239,24 @@ class MainWindow(QMainWindow):
             tb.addWidget(btn)
         tb.addSeparator()
 
-        # Safe Mode — indicador visual (Huawei usa commit/rollback nos NE).
+        # Safe Mode — nos equipamentos NE/ATN com suporte a commit trial,
+        # cada configuração usa "commit trial 600" (10 min para rollback
+        # automático se não confirmado). Em dispositivos sem suporte,
+        # o botão fica desabilitado.
         self.safe_btn = QPushButton("Safe Mode")
         self.safe_btn.setObjectName("safeMode")
         self.safe_btn.setCheckable(True)
-        self.safe_btn.setToolTip(
-            "Indicador visual no estilo WinBox.\nNos equipamentos NE/ATN "
-            "(dois estágios) o HuaweiBox já envia 'commit' a cada alteração; "
-            "use 'Salvar configuração' para gravar na flash.")
+        self.safe_btn.setEnabled(session.supports_safe_mode)
+        if session.supports_safe_mode:
+            self.safe_btn.setToolTip(
+                "Ativo: cada alteração usa 'commit trial 600'.\n"
+                "A config candidata é revertida automaticamente após 10 min\n"
+                "se não for confirmada com 'Salvar configuração'.")
+        else:
+            tip = ("Safe Mode não disponível neste equipamento.\n"
+                   "Requer VRP dois estágios (NE/ATN) com suporte a "
+                   "'commit trial'.")
+            self.safe_btn.setToolTip(tip)
         self.safe_btn.toggled.connect(self._safe_toggled)
         tb.addWidget(self.safe_btn)
         tb.addSeparator()
@@ -346,9 +356,14 @@ class MainWindow(QMainWindow):
     # Ações
     # ================================================================== #
     def _safe_toggled(self, on: bool) -> None:
-        self.statusBar().showMessage(
-            "Safe Mode ligado (indicador visual)." if on
-            else "Safe Mode desligado.", 4000)
+        self.session.safe_mode = on
+        if on:
+            self.statusBar().showMessage(
+                "Safe Mode ativado — cada alteração usa 'commit trial 600'. "
+                "A configuração candidata será revertida em 10 min se não for "
+                "confirmada via Sessão → Salvar configuração.", 8000)
+        else:
+            self.statusBar().showMessage("Safe Mode desativado.", 4000)
 
     def _save_config(self) -> None:
         if QMessageBox.question(
