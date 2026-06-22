@@ -1046,3 +1046,32 @@ def parse_domains(text: str) -> list[dict]:
             if m and not re.search(r"total|domain|state", s, re.I):
                 rows.append({"name": m.group(1), "state": ""})
     return rows
+
+
+# ──────────────────────────────────────────────────────────────────────────── #
+# MQC — traffic classifier / behavior / policy (firewall avançado e CGNAT)
+# ──────────────────────────────────────────────────────────────────────────── #
+def parse_mqc_blocks(text: str, head: str) -> list[dict]:
+    """Extrai blocos de ``display traffic classifier|behavior|policy``.
+
+    ``head`` é ``Classifier``, ``Behavior`` ou ``Policy``. Cada bloco começa
+    em ``<head>: <nome>`` e as linhas indentadas seguintes viram o detalhe
+    (if-match, redirect, precedence...). Tolerante a variações de layout.
+    """
+    rows = []
+    cur = None
+    start = re.compile(rf"^\s*{head}\s*:\s*(\S+)", re.I)
+    for line in text.splitlines():
+        m = start.match(line)
+        if m:
+            cur = {"name": m.group(1), "_d": []}
+            rows.append(cur)
+            continue
+        if cur is not None:
+            s = line.strip()
+            if (s and not re.match(r"^[-=]+$", s)
+                    and not re.match(r"^(Total|User|Traffic)", s, re.I)):
+                cur["_d"].append(s)
+    for r in rows:
+        r["detail"] = " · ".join(r.pop("_d")[:5])
+    return rows

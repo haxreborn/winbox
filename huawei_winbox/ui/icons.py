@@ -273,6 +273,7 @@ _MENU_ICON = {
     "PPPoE / BAS": ("user", INDIGO),
     "NAT": ("swap", TEAL),
     "ACL / Firewall": ("shield", RED),
+    "Firewall / NAT (avançado)": ("filter", RED),
     "Usuários": ("user", SLATE),
     "Vizinhos (LLDP)": ("route", INDIGO),
     "Serviços": ("gear", SLATE),

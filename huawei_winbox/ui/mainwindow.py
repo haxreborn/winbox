@@ -34,6 +34,7 @@ from .panels.dhcp import DhcpPanel
 from .panels.pppoe import PppoePanel
 from .panels.nat import NatPanel
 from .panels.acl import AclPanel
+from .panels.firewall import FirewallPanel
 from .panels.users import UsersPanel
 from .panels.lldp import LldpPanel
 from .panels.services import ServicesPanel
@@ -70,6 +71,7 @@ _MENU = [
     ("PPPoE / BAS", PppoePanel),
     ("NAT", NatPanel),
     ("ACL / Firewall", AclPanel),
+    ("Firewall / NAT (avançado)", FirewallPanel),
     ("Usuários", UsersPanel),
     ("Vizinhos (LLDP)", LldpPanel),
     ("Serviços", ServicesPanel),

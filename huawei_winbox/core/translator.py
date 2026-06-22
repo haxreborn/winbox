@@ -1429,3 +1429,119 @@ def local_ppp_user(username: str, password: str,
         f"local-user {username} service-type ppp",
         "quit",
     ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Firewall avançado / MQC (traffic classifier-behavior-policy) e CGNAT
+# ─────────────────────────────────────────────────────────────────────────────
+def fw_classifier(name: str, operator: str = "or", acl: int = 0,
+                  dscp: str = "", remove: bool = False) -> list[str]:
+    """Classificador MQC: casa um ACL e/ou DSCP."""
+    if remove:
+        return [f"undo traffic classifier {name}"]
+    cmds = [f"traffic classifier {name} operator {operator}"]
+    if acl:
+        cmds.append(f"if-match acl {acl}")
+    if dscp.strip():
+        cmds.append(f"if-match dscp {dscp.strip()}")
+    cmds.append("quit")
+    return cmds
+
+
+def fw_behavior(name: str, kind: str = "permit", nexthop: str = "",
+                interface: str = "", car_kbps: int = 0, dscp: str = "",
+                remove: bool = False) -> list[str]:
+    """Comportamento MQC.
+
+    kind: ``permit`` | ``deny`` | ``redirect-nexthop`` (CGNAT) |
+    ``redirect-interface`` | ``remark`` | ``car``.
+    """
+    if remove:
+        return [f"undo traffic behavior {name}"]
+    cmds = [f"traffic behavior {name}"]
+    if kind == "permit":
+        cmds.append("permit")
+    elif kind == "deny":
+        cmds.append("deny")
+    elif kind == "redirect-nexthop" and nexthop.strip():
+        cmds.append(f"redirect ip-nexthop {nexthop.strip()}")
+    elif kind == "redirect-interface" and interface.strip():
+        cmds.append(f"redirect interface {interface.strip()}")
+    elif kind == "remark" and dscp.strip():
+        cmds.append(f"remark dscp {dscp.strip()}")
+    if car_kbps:
+        cmds.append(f"car cir {car_kbps}")
+    cmds.append("quit")
+    return cmds
+
+
+def fw_policy_bind(policy: str, classifier: str, behavior: str,
+                   precedence: int = 0, share_mode: bool = False,
+                   remove: bool = False) -> list[str]:
+    """Associa classificador→comportamento dentro de uma traffic policy."""
+    cmds = [f"traffic policy {policy}"]
+    if share_mode:
+        cmds.append("share-mode")
+    if remove:
+        cmds.append(f"undo classifier {classifier}")
+    else:
+        c = f"classifier {classifier} behavior {behavior}"
+        if precedence:
+            c += f" precedence {precedence}"
+        cmds.append(c)
+    cmds.append("quit")
+    return cmds
+
+
+def fw_policy_delete(policy: str) -> list[str]:
+    return [f"undo traffic policy {policy}"]
+
+
+def fw_policy_apply(interface: str, policy: str, direction: str,
+                    remove: bool = False) -> list[str]:
+    """Aplica/retira a traffic policy numa interface."""
+    cmds = [f"interface {interface}"]
+    if remove:
+        cmds.append(f"undo traffic-policy {direction}")
+    else:
+        cmds.append(f"traffic-policy {policy} {direction}")
+    cmds.append("quit")
+    return cmds
+
+
+def fw_policy_apply_global(policy: str, direction: str = "inbound",
+                           remove: bool = False) -> list[str]:
+    """Aplica/retira a traffic policy globalmente (CGNAT: global-acl)."""
+    if remove:
+        return [f"undo traffic-policy {policy} {direction} global-acl"]
+    return [f"traffic-policy {policy} {direction} global-acl"]
+
+
+def fw_cgnat_chain(acl_number: int, source: str, wildcard: str,
+                   classifier: str, behavior: str, policy: str,
+                   nexthop: str, precedence: int = 15,
+                   apply_global: bool = True,
+                   direction: str = "inbound") -> list[str]:
+    """Monta toda a cadeia de CGNAT por redirecionamento (estilo A10):
+
+    ACL com a origem CGNAT → classificador → comportamento ``redirect
+    ip-nexthop`` → política → (opcional) aplicação global.
+    """
+    cmds = [
+        f"acl number {acl_number}",
+        f"description CGNAT-{classifier}",
+        f"rule 5 permit ip source {source} {wildcard}",
+        "quit",
+        f"traffic classifier {classifier} operator or",
+        f"if-match acl {acl_number}",
+        "quit",
+        f"traffic behavior {behavior}",
+        f"redirect ip-nexthop {nexthop}",
+        "quit",
+        f"traffic policy {policy}",
+        f"classifier {classifier} behavior {behavior} precedence {precedence}",
+        "quit",
+    ]
+    if apply_global:
+        cmds.append(f"traffic-policy {policy} {direction} global-acl")
+    return cmds
