@@ -45,6 +45,17 @@ _HOSTNAME_RE = re.compile(r"([<\[])([^<>\[\]\r\n]+)[>\]]")
 # Comandos que podem demorar bem mais que o timeout padrão.
 _LONG_TIMEOUT = 90.0   # ping, traceroute, logbuffer extenso
 
+# Mensagem quando o equipamento derruba a conexão durante o login (RST/EOF
+# — no Windows aparece como "10054 - conexão cancelada pelo host remoto").
+# Pode ocorrer quando o equipamento força a troca da senha no primeiro
+# acesso e não aceita adiá-la com "N".
+_CLOSED_MSG = (
+    "A conexão foi encerrada pelo equipamento durante o login.\n\n"
+    "Em alguns equipamentos isso acontece quando a troca da senha no "
+    "primeiro acesso é obrigatória e não pode ser adiada. Tente conectar "
+    "novamente; se persistir, conclua a troca de senha pelo console do "
+    "equipamento e tente de novo.")
+
 
 def confirm_answer(window: str) -> str:
     """Decide a resposta de uma confirmação ``[Y/N]`` do VRP.
@@ -257,9 +268,16 @@ class HuaweiSession:
                 chunk = self._shell.recv(65535)
             except socket.timeout:
                 chunk = b""
+            except (OSError, EOFError) as exc:
+                # Reset/aborto da conexão (ex.: WSAECONNRESET 10054 no
+                # Windows). Sem isto, viraria um traceback cru de socket.
+                raise SSHError(_CLOSED_MSG) from exc
             if chunk:
                 parts.append(chunk.decode("utf-8", errors="replace"))
                 deadline = time.time() + t   # recebeu dados → reseta prazo
+            elif self._shell.closed or self._shell.eof_received:
+                # recv vazio sem timeout ⇒ canal fechado pelo equipamento.
+                raise SSHError(_CLOSED_MSG)
 
             # Só o final interessa para detectar prompt/More/confirmação.
             tail_src = "".join(parts[-4:])[-4096:]
@@ -282,7 +300,7 @@ class HuaweiSession:
                 # caractere (raw). Nesse modo apenas \r sinaliza "Enter";
                 # enviar só \n faz o equipamento ecoar o caractere mas não
                 # confirmar a escolha — a sessão fica esperando o \r.
-                self._shell.send(confirm_answer(window) + "\r\n")
+                self._shell.send(confirm_answer(window) + "\r")
                 deadline = time.time() + t   # janela fresca para a resposta
                 time.sleep(0.1)
                 continue
