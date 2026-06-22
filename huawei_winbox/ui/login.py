@@ -18,7 +18,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
     QCheckBox, QPushButton, QTableWidget, QTableWidgetItem, QMessageBox,
-    QHeaderView, QMenuBar, QTabWidget, QToolButton, QComboBox, QFrame,
+    QHeaderView, QMenuBar, QToolButton, QComboBox, QFrame,
     QDialog, QApplication,
 )
 
@@ -154,21 +154,12 @@ class LoginWindow(QWidget):
         grid.addWidget(self._rlabel("Login:"), 1, 0)
         self.username = QLineEdit()
         grid.addWidget(self.username, 1, 1)
-        self.open_new = QCheckBox("Open In New Window")
-        self.open_new.setToolTip(
-            "Compatibilidade visual com o WinBox (sem efeito aqui).")
-        grid.addWidget(self.open_new, 1, 2)
 
         grid.addWidget(self._rlabel("Password:"), 2, 0)
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.Password)
         self.password.returnPressed.connect(self._connect_clicked)
         grid.addWidget(self.password, 2, 1)
-        self.auto_recon = QCheckBox("Auto Reconnect")
-        self.auto_recon.setChecked(True)
-        self.auto_recon.setToolTip(
-            "Compatibilidade visual com o WinBox (sem efeito aqui).")
-        grid.addWidget(self.auto_recon, 2, 2)
 
         # Fileira de botões.
         btns = QHBoxLayout()
@@ -189,14 +180,19 @@ class LoginWindow(QWidget):
         grid.setColumnStretch(1, 1)
         return grid
 
-    def _build_tabs(self) -> QTabWidget:
-        tabs = QTabWidget()
+    def _build_tabs(self) -> QWidget:
+        container = QWidget()
+        cl = QVBoxLayout(container)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(4)
 
-        managed = QWidget()
-        ml = QVBoxLayout(managed)
-        ml.setContentsMargins(6, 6, 6, 6)
-        ml.setSpacing(6)
-        ml.addLayout(self._build_table_toolbar())
+        label = QLabel("Managed")
+        label.setStyleSheet(
+            "font-weight:bold; padding:2px 6px; "
+            "background:#dde3eb; border:1px solid #b0b8c8; border-bottom:none;")
+        cl.addWidget(label)
+
+        cl.addLayout(self._build_table_toolbar())
 
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["Address", "User"])
@@ -213,19 +209,8 @@ class LoginWindow(QWidget):
         self.table.itemSelectionChanged.connect(self._fill_from_selection)
         self.table.itemDoubleClicked.connect(
             lambda _item: self._connect_clicked())
-        ml.addWidget(self.table)
-        tabs.addTab(managed, "Managed")
-
-        neigh = QWidget()
-        nl = QVBoxLayout(neigh)
-        info = QLabel(
-            "Descoberta de vizinhos não se aplica à conexão SSH.\n"
-            "Use o módulo \"Vizinhos (LLDP)\" depois de conectar.")
-        info.setAlignment(Qt.AlignCenter)
-        info.setStyleSheet("color:#6a6a6a;")
-        nl.addWidget(info)
-        tabs.addTab(neigh, "Neighbors")
-        return tabs
+        cl.addWidget(self.table)
+        return container
 
     def _build_table_toolbar(self) -> QHBoxLayout:
         bar = QHBoxLayout()
