@@ -7,33 +7,60 @@ porta (velocidade, duplex, negociação, potência ótica, contadores).
 
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QPushButton, QMessageBox, QDialog, QVBoxLayout, QGridLayout,
     QLabel, QDialogButtonBox, QGroupBox, QScrollArea, QWidget,
 )
 
+from ...core import history as history_mod
 from ...core import parsers, telemetry, translator
 from ..forms import SimpleForm
+from ..widgets.traffic_graph import TrafficGraphWidget, Series, series_color
 from ..worker import run_async
 from .base import BasePanel
 
 
 class InterfaceDetailDialog(QDialog):
-    """Diálogo com detalhes completos da porta (double-click)."""
+    """Diálogo com detalhes completos da porta (double-click).
 
-    def __init__(self, iface_name: str, info: dict, parent=None):
+    Junta num lugar só o que estava espalhado: estado, camada física,
+    diagnóstico do módulo óptico, contadores — e o **gráfico ao vivo** da
+    própria porta, alimentado pelo coletor que já está amostrando. Não
+    custa nenhuma consulta extra ao equipamento.
+    """
+
+    def __init__(self, iface_name: str, info: dict, parent=None,
+                 history=None):
         super().__init__(parent)
         self.setWindowTitle(f"Detalhes — {iface_name}")
-        self.resize(580, 480)
+        self.resize(620, 620)
+        self._iface = iface_name
+        self._history = history
         root = QVBoxLayout(self)
+
+        # ── Gráfico ao vivo da porta ── #
+        self._graph = None
+        if history is not None and history.series(iface_name) is not None:
+            self._graph = TrafficGraphWidget()
+            self._graph.setMinimumHeight(150)
+            self._graph.setMaximumHeight(190)
+            self._graph.set_window(300)
+            self._graph.set_title(f"Banda de {iface_name} — últimos 5 min")
+            root.addWidget(self._graph)
+            self._timer = QTimer(self)
+            self._timer.timeout.connect(self._update_graph)
+            self._timer.start(1000)
+            self._update_graph()
 
         # Área rolável para caber em todas as telas
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         content = QWidget()
         scroll.setWidget(content)
-        root.addWidget(scroll)
+        root.addWidget(scroll, 1)
         layout = QVBoxLayout(content)
         layout.setSpacing(6)
 
@@ -115,8 +142,19 @@ class InterfaceDetailDialog(QDialog):
         layout.addStretch(1)
 
         btns = QDialogButtonBox(QDialogButtonBox.Close)
+        btns.button(QDialogButtonBox.Close).setText("Fechar")
         btns.rejected.connect(self.reject)
         root.addWidget(btns)
+
+    def _update_graph(self) -> None:
+        if self._graph is None or self._history is None:
+            return
+        samples = self._history.samples(self._iface, time.time() - 300, 600)
+        if not samples:
+            return
+        self._graph.set_series([Series(
+            key=self._iface, label=self._iface,
+            color=series_color(0), samples=samples)])
 
 
 class InterfacesPanel(BasePanel):
@@ -405,7 +443,9 @@ class InterfacesPanel(BasePanel):
 
         def done(info: dict):
             self._set_busy(False, "")
-            dlg = InterfaceDetailDialog(row["name"], info, self)
+            dlg = InterfaceDetailDialog(
+                row["name"], info, self,
+                history=history_mod.for_session(self.session))
             dlg.exec()
 
         run_async(fetch, done, self._on_error)

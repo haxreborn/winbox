@@ -27,7 +27,7 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
   | Módulo | O que faz |
   |---|---|
   | Painel | visão geral ao vivo: CPU, memória, temperatura, banda total, ranking das portas mais carregadas, estado de BGP/OSPF/interfaces e identificação do equipamento — tudo numa janela só |
-  | Interfaces | lista (`display interface brief`), habilitar/desabilitar, descrição, IP, MTU |
+  | Interfaces | lista com RX/TX ao vivo (vindos do coletor, sem consulta extra), habilitar/desabilitar, descrição, IP, MTU e **Ver no gráfico**; duplo clique abre os detalhes da porta com o gráfico dela embutido |
   | Tráfego (gráfico) | gráfico em tempo real de **várias interfaces ao mesmo tempo**, em modo sobreposto, grade ou empilhado; fonte **SNMP** ou **CLI (SSH)** |
   | Configuração | baixa o `display current-configuration`, navega por blocos, procura texto, **compara com a config salva** (mostra o que se perderia num reboot), tira instantâneos para ver o que mudou, salva em arquivo e envia blocos colados |
   | Endereços IP | visão `display ip interface brief`, adicionar/remover IPs |
@@ -45,7 +45,7 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
   | Usuários | contas locais AAA: criar/remover, privilégio e serviços (protege o usuário da sessão) |
   | Vizinhos (LLDP) | descoberta de equipamentos conectados, como o *Neighbors* do WinBox |
   | Serviços | NTP, comunidade SNMP v2c, SSH (STelnet) e LLDP |
-  | Logs | `display logbuffer` com filtro por texto |
+  | Logs | eventos do `display logbuffer` em tabela, coloridos por severidade, com filtro por nível/módulo/texto, contadores e modo **Acompanhar** que destaca o que chegou de novo |
   | Ferramentas | ping e traceroute executados a partir do equipamento |
   | Sistema | versão, CPU, memória, uptime, renomear (`sysname`), **salvar configuração** |
   | Novo Terminal | console CLI integrado usando a mesma sessão SSH |

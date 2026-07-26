@@ -212,18 +212,24 @@ def parse_interface_detail(text: str) -> dict:
         m = re.match(r"Description\s*[:\-]\s*(.+)", s, re.I)
         if m:
             info["description"] = m.group(1).strip()
-        m = re.match(r"Speed\s*:\s*(\d+)", s)
-        if m:
+        # O VRP põe vários campos na MESMA linha, separados por vírgula:
+        #   Speed : 1000,  Loopback: NONE
+        #   Duplex: FULL,  Negotiation: ENABLE
+        # Com re.match (ancorado no início) só o primeiro campo de cada
+        # linha era lido e "Negociação" ficava sempre vazia. O valor também
+        # vinha com a vírgula grudada ("FULL,").
+        m = re.search(r"\bSpeed\s*:\s*(\d+)", s)
+        if m and not info["speed"]:
             info["speed"] = m.group(1)
-        m = re.match(r"Duplex\s*:\s*(\S+)", s)
-        if m:
+        m = re.search(r"\bDuplex\s*:\s*([^\s,]+)", s)
+        if m and not info["duplex"]:
             info["duplex"] = m.group(1)
-        m = re.match(r"Negotiation\s*:\s*(\S+)", s)
-        if m:
+        m = re.search(r"\bNegotiation\s*:\s*([^\s,]+)", s)
+        if m and not info["negotiation"]:
             info["negotiation"] = m.group(1)
-        m = re.match(r"MTU\s+(\d+)", s)
-        if m:
-            info["mtu"] = m.group(1)
+        m = re.search(r"\bMTU\s+(\d+)|Maximum Transmit Unit is\s+(\d+)", s)
+        if m and not info["mtu"]:
+            info["mtu"] = m.group(1) or m.group(2)
         m = re.search(r"Port TX Power.*?:\s*(-?[\d.]+)", s)
         if m:
             info["tx_power"] = m.group(1) + " dBm"
@@ -979,6 +985,80 @@ def parse_mac_table(text: str) -> list[dict]:
             "interface": interface,
         })
     return rows
+
+
+# ──────────────────────────────────────────────────────────────────────────── #
+# Logbuffer
+# ──────────────────────────────────────────────────────────────────────────── #
+# Severidade do VRP (mesma escala do syslog): 0 é o mais grave.
+LOG_SEVERITY = {
+    0: "emergência", 1: "alerta", 2: "crítico", 3: "erro",
+    4: "aviso", 5: "notificação", 6: "informação", 7: "depuração",
+}
+
+# "Sep 12 2025 14:02:11 SW01 %%01IFNET/4/LINK_STATE(l):mensagem"
+# Variações cobertas: fração de segundo e fuso ("14:02:11.123.1+03:00"),
+# índice entre colchetes ("(l)[42]:") e o número de versão após o "%%".
+_LOG_LINE_RE = re.compile(
+    r"^(?P<stamp>[A-Z][a-z]{2}\s+\d{1,2}\s+\d{4}\s+"
+    r"\d{2}:\d{2}:\d{2}(?:[.\d]*)?(?:[+-]\d{2}:\d{2})?)\s+"
+    r"(?P<host>\S+)\s+"
+    r"%%\d*(?P<module>[A-Za-z0-9_-]+)/(?P<severity>\d)/"
+    r"(?P<event>[A-Za-z0-9_-]+)"
+    r"\s*(?:\([a-z]\))?(?:\[\d+\])?\s*:\s*(?P<message>.*)$")
+
+
+def parse_logbuffer(text: str) -> list[dict]:
+    """``display logbuffer`` -> [{stamp, severity, level, module, event, message}]
+
+    Extrai a severidade do próprio código do VRP (``%%01BGP/3/STATE_CHG``:
+    o ``3`` é o nível), que é o que permite separar um aviso de rotina de
+    um vizinho BGP caindo. Linhas que não casam com o padrão viram entradas
+    de texto puro em vez de serem descartadas — algumas versões quebram a
+    mensagem em várias linhas, e perder a continuação esconderia justamente
+    o detalhe do evento.
+    """
+    rows: list[dict] = []
+    for line in text.splitlines():
+        stripped = line.rstrip()
+        if not stripped.strip():
+            continue
+        match = _LOG_LINE_RE.match(stripped.strip())
+        if match:
+            level = int(match.group("severity"))
+            rows.append({
+                "stamp": match.group("stamp"),
+                "level": level,
+                "severity": LOG_SEVERITY.get(level, str(level)),
+                "module": match.group("module"),
+                "event": match.group("event"),
+                "message": match.group("message").strip(),
+                "raw": stripped,
+            })
+            continue
+        if _looks_like_header(stripped):
+            # Cabeçalho do próprio comando ("Allowed max buffer size : ...",
+            # linhas de traços): não é evento, não entra na lista.
+            continue
+        if rows:
+            # Continuação da mensagem anterior (o VRP quebra as longas).
+            rows[-1]["message"] = f"{rows[-1]['message']} {stripped.strip()}"
+            rows[-1]["raw"] += "\n" + stripped
+            continue
+        rows.append({
+            "stamp": "", "level": 6, "severity": LOG_SEVERITY[6],
+            "module": "", "event": "", "message": stripped.strip(),
+            "raw": stripped,
+        })
+    return rows
+
+
+def _looks_like_header(line: str) -> bool:
+    """Linhas decorativas ou de cabeçalho do próprio comando."""
+    return bool(re.match(r"^[-=]{3,}$|^Logging buffer|^Allowed max buffer|"
+                         r"^Actual buffer|^Channel number|^Dropped messages|"
+                         r"^Overwritten messages|^Current messages",
+                         line.strip(), re.IGNORECASE))
 
 
 # ──────────────────────────────────────────────────────────────────────────── #
