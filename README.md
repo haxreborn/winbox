@@ -55,6 +55,12 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
   e `return`), com opção de copiar ou cancelar — nada é enviado sem o seu OK.
 - **Tudo assíncrono**: as consultas SSH rodam em threads; a janela nunca
   congela.
+- **O ambiente volta como você deixou**: ao reconectar no mesmo
+  equipamento, as janelas que estavam abertas reabrem no mesmo lugar e
+  tamanho, as interfaces marcadas no gráfico voltam marcadas (com o mesmo
+  modo de exibição e janela de tempo) e a comunidade SNMP já vem
+  preenchida. Fica em `~/.huaweibox/workspace.json`, por endereço do
+  equipamento e **sem nenhuma senha**.
 
 ## Gráfico de tráfego: várias interfaces ao mesmo tempo
 
@@ -168,6 +174,7 @@ huawei_winbox/
 │   ├── parsers.py           # saída dos "display ..." -> tabelas
 │   ├── snmp.py              # cliente SNMP v2c próprio (BER, GET-BULK) — só leitura
 │   ├── history.py           # séries temporais em memória (por sessão)
+│   ├── workspace.py         # layout e preferências por equipamento
 │   └── profiles.py          # equipamentos salvos (~/.huaweibox)
 └── ui/
     ├── login.py             # tela de conexão estilo WinBox

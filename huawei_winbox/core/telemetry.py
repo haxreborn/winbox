@@ -128,6 +128,14 @@ class TelemetryEngine:
             self._active_source = ""
         self._wake.set()
 
+    @property
+    def community(self) -> str:
+        return self._community
+
+    @property
+    def snmp_port(self) -> int:
+        return self._snmp_port
+
     def configure_snmp(self, community: str, port: int = 161,
                        timeout: float = 1.5) -> None:
         with self._lock:

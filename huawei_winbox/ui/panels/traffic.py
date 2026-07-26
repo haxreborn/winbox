@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
 )
 
-from ...core import parsers, snmp, telemetry
+from ...core import parsers, snmp, telemetry, workspace
 from ...core import history as history_mod
 from ..worker import run_async
 from ..widgets.traffic_graph import (
@@ -53,15 +53,21 @@ _REDRAW_MS = 500
 
 class TrafficPanel(QWidget):
     title = "Tráfego"
+    state_key = "traffic"
 
     def __init__(self, session, parent=None):
         super().__init__(parent)
         self.session = session
         self.history = history_mod.for_session(session)
         self.engine = telemetry.for_session(session, self.history)
+        # Preferências da última sessão com ESTE equipamento: quais portas
+        # estavam marcadas e em que modo. Reabrir o gráfico e ter que
+        # remarcar tudo era o tipo de atrito que se paga todo dia.
+        self._saved = workspace.panel_state(session.host, self.state_key)
 
         self._colors: dict[str, int] = {}
-        self._checked: set[str] = set()
+        self._checked: set[str] = set(
+            n for n in self._saved.get("checked", []) if isinstance(n, str))
         self._rows: dict[str, int] = {}
         self._known: list[str] = []
         self._last_generation = -1
@@ -87,15 +93,73 @@ class TrafficPanel(QWidget):
         self.status.setTextInteractionFlags(Qt.TextSelectableByMouse)
         root.addWidget(self.status)
 
+        self._restore_controls()
+
         # Timer só de DESENHO: lê o retrato em memória, nunca o equipamento.
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh_view)
         self._timer.start(_REDRAW_MS)
 
-        self.engine.set_interval(self.interval_combo.currentData())
         self.engine.acquire_traffic("traffic-panel")
         self.engine.start()
         self.engine.poke()
+
+    def _restore_controls(self) -> None:
+        """Alinha os controles com o motor e com o que foi salvo.
+
+        Os combos refletem o motor (que é compartilhado com o Painel e a
+        barra de status) em vez de imporem os próprios padrões — senão
+        abrir esta janela mudaria a coleta de todo mundo sem o usuário
+        pedir.
+        """
+        for combo, key, setter in (
+            (self.mode_combo, "mode", self.mode_combo.setCurrentText),
+            (self.direction_combo, "direction",
+             self.direction_combo.setCurrentText),
+            (self.scale_combo, "scale", self.scale_combo.setCurrentText),
+        ):
+            value = self._saved.get(key)
+            if isinstance(value, str) and combo.findText(value) >= 0:
+                combo.blockSignals(True)
+                setter(value)
+                combo.blockSignals(False)
+        window = self._saved.get("window")
+        if window is not None or "window" in self._saved:
+            index = self.window_combo.findData(window)
+            if index >= 0:
+                self.window_combo.setCurrentIndex(index)
+
+        index = self.source_combo.findData(self.engine.source)
+        if index >= 0:
+            self.source_combo.blockSignals(True)
+            self.source_combo.setCurrentIndex(index)
+            self.source_combo.blockSignals(False)
+        index = self.interval_combo.findData(int(self.engine.interval))
+        if index >= 0:
+            self.interval_combo.blockSignals(True)
+            self.interval_combo.setCurrentIndex(index)
+            self.interval_combo.blockSignals(False)
+        else:
+            self.engine.set_interval(self.interval_combo.currentData())
+
+        self.community_edit.setText(self.engine.community)
+        self.port_spin.setValue(self.engine.snmp_port)
+        self.snmp_box.setVisible(self.engine.source != telemetry.SOURCE_CLI)
+        self.graph.set_mode(self.mode_combo.currentText())
+        self.graph.set_direction(self.direction_combo.currentText())
+        self.graph.set_scale(self.scale_combo.currentText())
+        self.scale_combo.setEnabled(
+            self.mode_combo.currentText() == MODE_GRID)
+
+    def collect_state(self) -> dict:
+        """O que vale a pena reencontrar na próxima conexão."""
+        return {
+            "checked": sorted(self._checked),
+            "mode": self.mode_combo.currentText(),
+            "direction": self.direction_combo.currentText(),
+            "scale": self.scale_combo.currentText(),
+            "window": self.window_combo.currentData(),
+        }
 
     # ================================================================== #
     # Construção da interface
@@ -290,9 +354,14 @@ class TrafficPanel(QWidget):
             self.run_btn.setText("Parar coleta")
 
     def _apply_snmp(self) -> None:
-        self.engine.configure_snmp(self.community_edit.text().strip(),
-                                   self.port_spin.value())
+        community = self.community_edit.text().strip() or "public"
+        self.engine.configure_snmp(community, self.port_spin.value())
         self.engine.poke()
+        # Grava na hora: é a configuração que mais dói ter que redigitar, e
+        # esperar o fechamento da janela para salvar a perderia num travamento.
+        workspace.save(self.session.host,
+                       {"snmp_community": community,
+                        "snmp_port": self.port_spin.value()})
         self.status.setText("Configuração SNMP aplicada — recoletando…")
 
     def _test_snmp(self) -> None:

@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.session import HuaweiSession, INTERACTIVE
-from ..core import telemetry
+from ..core import telemetry, workspace
 from ..core import history as history_mod
 from . import icons
 from .forms import SimpleForm
@@ -140,6 +140,11 @@ class MainWindow(QMainWindow):
         # equipamento por conta própria.
         self.history = history_mod.for_session(session)
         self.telemetry = telemetry.for_session(session, self.history)
+        # Preferências deste equipamento (janelas abertas, fonte e cadência
+        # da telemetria, comunidade SNMP). Aplicadas antes de subir o
+        # coletor para ele já começar do jeito certo.
+        self._workspace = workspace.load(session.host)
+        self._apply_workspace_telemetry()
         self.telemetry.start()
 
         self._build_menubar()
@@ -190,10 +195,96 @@ class MainWindow(QMainWindow):
         self._load_timer.timeout.connect(self._poll_load)
         self._set_load_interval(5)
 
-        # Abre o Painel de cara: dá a visão geral do equipamento de uma vez.
-        self.menu.setCurrentRow(0)
-        self._open_panel(self.menu.item(0))
+        # Reabre o que estava aberto na última sessão com este equipamento;
+        # na primeira vez, abre o Painel — a visão geral de uma vez só.
+        if not self._restore_windows():
+            self.menu.setCurrentRow(0)
+            self._open_panel(self.menu.item(0))
         QTimer.singleShot(400, self._poll_load)
+
+    # ================================================================== #
+    # Preferências por equipamento
+    # ================================================================== #
+    def _apply_workspace_telemetry(self) -> None:
+        saved = self._workspace
+        community = saved.get("snmp_community")
+        if community:
+            self.telemetry.configure_snmp(community,
+                                          int(saved.get("snmp_port") or 161))
+        source = saved.get("telemetry_source")
+        if source in telemetry.SOURCE_LABELS:
+            self.telemetry.set_source(source)
+        interval = saved.get("telemetry_interval")
+        if isinstance(interval, (int, float)) and interval > 0:
+            self.telemetry.set_interval(interval)
+
+    def _restore_windows(self) -> bool:
+        """Reabre as janelas da última sessão. True se abriu alguma."""
+        entries = self._workspace.get("windows")
+        if not isinstance(entries, list) or not entries:
+            return False
+        known = dict(_MENU)
+        opened = 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            label = entry.get("label")
+            if label not in known:
+                continue        # módulo renomeado ou removido numa atualização
+            items = self.menu.findItems(label, Qt.MatchExactly)
+            if not items:
+                continue
+            try:
+                self._open_panel(items[0])
+            except Exception:            # noqa: BLE001 — layout nunca bloqueia
+                continue
+            window = self._windows.get(label)
+            geometry = entry.get("geometry")
+            if window is not None and isinstance(geometry, list) \
+                    and len(geometry) == 4:
+                try:
+                    window.setGeometry(*(int(v) for v in geometry))
+                except (TypeError, ValueError):
+                    pass
+            opened += 1
+        return opened > 0
+
+    def _collect_workspace(self) -> dict:
+        windows = []
+        for label, window in self._windows.items():
+            if window is None or not shiboken6.isValid(window):
+                continue
+            rect = window.geometry()
+            windows.append({
+                "label": label,
+                "geometry": [rect.x(), rect.y(), rect.width(), rect.height()],
+            })
+        snapshot = self.telemetry.snapshot()
+        values = {
+            "windows": windows,
+            "telemetry_source": snapshot["requested_source"],
+            "telemetry_interval": snapshot["interval"],
+        }
+        if self.telemetry.community and self.telemetry.community != "public":
+            values["snmp_community"] = self.telemetry.community
+            values["snmp_port"] = self.telemetry.snmp_port
+        # Cada painel pode contribuir com o seu próprio estado.
+        for label, window in self._windows.items():
+            if window is None or not shiboken6.isValid(window):
+                continue
+            panel = window.widget()
+            collect = getattr(panel, "collect_state", None)
+            if callable(collect):
+                try:
+                    state = collect()
+                except Exception:        # noqa: BLE001 — nunca impede o fechar
+                    continue
+                if isinstance(state, dict):
+                    # Chave própria do painel quando existir: sobrevive a
+                    # uma renomeação do item de menu.
+                    key = getattr(panel, "state_key", None) or label
+                    values.setdefault("panels", {})[key] = state
+        return values
 
     # ================================================================== #
     # Construção da casca
@@ -524,6 +615,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._load_timer.stop()
+        try:
+            workspace.save(self.session.host, self._collect_workspace())
+        except Exception:               # noqa: BLE001 — nunca trava o fechar
+            pass
         telemetry.release(self.session)
         self.session.close()
         super().closeEvent(event)
