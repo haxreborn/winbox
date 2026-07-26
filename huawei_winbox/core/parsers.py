@@ -123,6 +123,72 @@ def parse_interface_rates(text: str) -> dict[str, tuple[str, str]]:
             for name, (rx, tx) in parse_interface_rates_bps(text).items()}
 
 
+# Formas em que o VRP anuncia a banda da porta, em ordem de preferência.
+_BW_PATTERNS = [
+    # "Port BW: 10G, Transceiver max BW: 10G" / "Current BW: 1G"
+    (re.compile(r"(?:Port|Current|Transceiver max)\s*BW\s*:\s*(\d+)\s*([GMK])",
+                re.I), "suffix"),
+    # "Speed : 1000, Loopback: NONE"  (megabits)
+    (re.compile(r"\bSpeed\s*:\s*(\d+)", re.I), "mbps"),
+    # "The Maximum Transmit Unit is 1500 bytes ... bandwidth 1000000 kbit"
+    (re.compile(r"\bbandwidth\s+(\d+)\s*kbit", re.I), "kbps"),
+]
+_BW_SUFFIX = {"G": 1_000_000_000, "M": 1_000_000, "K": 1_000}
+
+
+def parse_interface_bandwidth_bps(text: str) -> dict[str, int]:
+    """``display interface`` (uma ou todas) -> {nome: banda_em_bps}.
+
+    A velocidade nominal da porta é o que permite converter a coluna de
+    utilização (%) do ``display interface brief`` em bits/s. O ``brief`` é
+    muito mais barato que o dump completo, então a banda é lida uma vez e
+    reaproveitada em todas as amostras seguintes.
+    """
+    speeds: dict[str, int] = {}
+    current = ""
+    state_re = re.compile(rf"^({_IFACE_NAME}) current state\s*:", re.I)
+    for line in text.splitlines():
+        s = line.strip()
+        m = state_re.match(s)
+        if m:
+            current = expand_iface_name(m.group(1))
+            continue
+        if not current or current in speeds:
+            continue
+        for pattern, kind in _BW_PATTERNS:
+            m = pattern.search(s)
+            if not m:
+                continue
+            if kind == "suffix":
+                value = int(m.group(1)) * _BW_SUFFIX.get(
+                    m.group(2).upper(), 1_000_000)
+            elif kind == "mbps":
+                value = int(m.group(1)) * 1_000_000
+            else:
+                value = int(m.group(1)) * 1_000
+            if value > 0:
+                speeds[current] = value
+            break
+    return speeds
+
+
+def parse_interface_utilization(text: str) -> dict[str, tuple[float, float]]:
+    """``display interface brief`` -> {nome: (in_util_%, out_util_%)}.
+
+    Só devolve as portas em que o equipamento realmente informou a
+    utilização (a coluna vem como "--" quando não há estatística).
+    """
+    out: dict[str, tuple[float, float]] = {}
+    for row in parse_interface_brief(text):
+        try:
+            in_pct = float(row["in_util"].rstrip("%"))
+            out_pct = float(row["out_util"].rstrip("%"))
+        except (ValueError, AttributeError):
+            continue
+        out[row["name"]] = (in_pct, out_pct)
+    return out
+
+
 def parse_interface_detail(text: str) -> dict:
     """``display interface <name>`` ->
     dict com status, velocidade, duplex, potência ótica, estatísticas."""

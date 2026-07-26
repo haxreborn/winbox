@@ -26,8 +26,10 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
 
   | Módulo | O que faz |
   |---|---|
+  | Painel | visão geral ao vivo: CPU, memória, temperatura, banda total, ranking das portas mais carregadas, estado de BGP/OSPF/interfaces e identificação do equipamento — tudo numa janela só |
   | Interfaces | lista (`display interface brief`), habilitar/desabilitar, descrição, IP, MTU |
-  | Tráfego (gráfico) | gráfico em tempo real de consumo de banda (RX/TX) por interface, com histórico do tempo em que a janela está aberta; fonte **CLI (SSH)** ou **SNMP** |
+  | Tráfego (gráfico) | gráfico em tempo real de **várias interfaces ao mesmo tempo**, em modo sobreposto, grade ou empilhado; fonte **SNMP** ou **CLI (SSH)** |
+  | Configuração | baixa o `display current-configuration`, navega por blocos, procura texto, **compara com a config salva** (mostra o que se perderia num reboot), tira instantâneos para ver o que mudou, salva em arquivo e envia blocos colados |
   | Endereços IP | visão `display ip interface brief`, adicionar/remover IPs |
   | VLANs | criar/remover VLAN, porta em modo *access* e *trunk* |
   | Rotas | tabela de roteamento, criar/remover rotas estáticas |
@@ -54,27 +56,77 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
 - **Tudo assíncrono**: as consultas SSH rodam em threads; a janela nunca
   congela.
 
-## Gráfico de tráfego e SNMP
+## Gráfico de tráfego: várias interfaces ao mesmo tempo
 
-O módulo **Tráfego (gráfico)** desenha o consumo de banda (RX/TX) da
-interface escolhida enquanto a janela fica aberta — um gráfico estilo
-*Traffic* do WinBox, com escala automática e legenda de valor atual/pico.
-O histórico fica em memória (vinculado à sessão) e sobrevive ao fechar e
-reabrir o painel. Há duas fontes de dados:
+O módulo **Tráfego (gráfico)** acompanha quantas portas você quiser de uma
+vez. A lista da esquerda marca as interfaces (com filtro, "Ativas" e
+"Top 8") e mostra RX/TX/pico de cada uma ao vivo; o quadradinho colorido
+liga cada linha do gráfico à sua porta. Três formas de olhar:
 
-- **CLI (SSH)** — lê a taxa que o próprio equipamento informa
-  (`display interface <nome>`). Funciona sem nenhuma configuração extra
-  além do SSH.
-- **SNMP** — lê os contadores de octetos (`ifHCInOctets`/`ifHCOutOctets`,
-  com queda para os de 32 bits) e calcula a taxa entre as amostras. **Exige
-  que o agente SNMP já esteja habilitado no equipamento** (use o módulo
-  *SNMP* para isso); a comunidade e a porta são informadas no próprio
-  painel, e o botão **Testar SNMP** confirma o acesso lendo `sysName`,
-  `sysUpTime` e `sysDescr`.
+| Exibição | Para quê |
+|---|---|
+| **Sobreposto** | todas no mesmo eixo — comparar quem consome mais |
+| **Grade** | um mini-gráfico por porta, no mesmo eixo de tempo — varrer muitas portas sem as linhas se embolarem |
+| **Empilhado** | áreas somadas — ver a composição do tráfego total |
+
+Passando o mouse, uma linha vertical mostra o valor de **todas** as séries
+naquele mesmo instante. Dá para congelar o desenho (a coleta continua por
+trás), escolher a janela de tempo (30 s a "tudo"), ver só RX ou só TX e
+exportar o histórico em CSV.
+
+**Marcar mais interfaces não aumenta a carga sobre o equipamento**: cada
+amostra já traz todas as portas.
+
+### Fontes de dados
+
+- **SNMP** (recomendada) — lê os contadores de octetos de **todas** as
+  interfaces com **GET-BULK**: uma placa de 48 portas cabe em 2 ou 3
+  pacotes UDP, contra ~150 idas e voltas do GET-NEXT. É barato o bastante
+  para amostrar de segundo em segundo, e a taxa é calculada aqui
+  (diferença de octetos ÷ tempo), então o valor é o **instantâneo** de
+  verdade. Prefere `ifHCInOctets`/`ifHCOutOctets` (64 bits), cai para os de
+  32 bits, e trata a volta do contador sem inventar picos. **Exige o agente
+  SNMP habilitado** (use o módulo *SNMP* para isso).
+- **CLI (SSH)** — sem agente SNMP, um único `display interface brief` traz
+  a utilização de todas as portas; a banda nominal, lida uma vez do dump
+  completo, converte porcentagem em bits/s. Continua sendo **um comando por
+  amostra**, independente de quantas portas estejam sendo observadas. A
+  taxa que o VRP informa é média de 300 s, então é mais suave que a do SNMP.
+- **Automático** (padrão) — tenta SNMP e cai para a CLI sozinho.
+
+A comunidade e a porta ficam no próprio painel (ou em
+*Configurações → Comunidade SNMP*), e **Testar SNMP** confirma o acesso
+lendo `sysName`, `sysUpTime`, `sysDescr` e a contagem de interfaces.
 
 O cliente SNMP v2c é implementado internamente (codificação BER própria),
 então **não há dependências novas** — o projeto continua usando apenas
 PySide6 e paramiko.
+
+## Como o app se mantém responsivo com muitas janelas abertas
+
+O VRP atende **um** comando por vez em cada sessão SSH. Com várias janelas
+em auto-atualização, o antigo "quem chegar primeiro" fazia um
+`display interface` demorado segurar a fila inteira — e era isso que fazia
+o gráfico engasgar. Agora todo acesso passa por uma fila única
+(`core/scheduler.py`) com quatro mecanismos:
+
+- **prioridade** — um clique seu fura a fila das atualizações de fundo;
+- **coalescência** — dois painéis pedindo o mesmo `display` ao mesmo tempo
+  executam **um** comando e recebem os dois a mesma resposta;
+- **cache curto** — saídas de `display` valem alguns segundos, então um
+  painel a cada 5 s e outro a cada 10 s dividem a mesma leitura;
+- **descarte de pedidos vencidos** — uma atualização de fundo que passou
+  tempo demais na fila é jogada fora em vez de executada; quando ela
+  finalmente rodasse, o painel já teria pedido a próxima.
+
+Além disso, **um só coletor** (`core/telemetry.py`) alimenta o gráfico, o
+Painel e os indicadores da barra — antes cada um consultava o equipamento
+por conta própria. Quando nenhuma janela de tráfego está aberta, ele
+acompanha apenas CPU e memória.
+
+A barra de status mostra o estado da fila (pedidos pendentes, consultas
+evitadas pelo cache/coalescência e descartes), então dá para ver a coisa
+funcionando.
 
 ## Instalação
 
@@ -92,10 +144,16 @@ python -m huawei_winbox.main
 
 1. Informe o IP, usuário e senha do equipamento Huawei (SSH habilitado com
    `stelnet server enable` e usuário com `service-type ssh`).
-2. Clique em **Conectar**.
-3. Use o menu lateral para abrir os módulos; cada configuração mostra o CLI
+2. Clique em **Conectar**. A janela abre no **Painel**, com a visão geral
+   do equipamento.
+3. Para o gráfico em tempo real de verdade, habilite o agente SNMP (módulo
+   **SNMP**) e informe a comunidade em *Configurações → Comunidade SNMP*
+   ou no próprio painel de Tráfego. Sem SNMP tudo funciona igual, só com a
+   taxa suavizada que a CLI informa.
+4. Use o menu lateral para abrir os módulos; cada configuração mostra o CLI
    gerado antes de aplicar.
-4. Ao final, use **Sistema → Salvar configuração** para gravar (`save`).
+5. Ao final, use **Sistema → Salvar configuração** para gravar (`save`) —
+   ou confira antes no módulo **Configuração** o que está pendente.
 
 ## Estrutura do código
 
@@ -104,10 +162,12 @@ huawei_winbox/
 ├── main.py                  # ponto de entrada
 ├── core/
 │   ├── session.py           # sessão SSH persistente (paramiko) com o VRP
+│   ├── scheduler.py         # fila de comandos: prioridade, cache, descarte
+│   ├── telemetry.py         # coletor único de métricas em tempo real
 │   ├── translator.py        # cliques -> comandos CLI do VRP
 │   ├── parsers.py           # saída dos "display ..." -> tabelas
-│   ├── snmp.py              # cliente SNMP v2c próprio (BER) — só leitura
-│   ├── history.py           # histórico de tráfego em memória (por sessão)
+│   ├── snmp.py              # cliente SNMP v2c próprio (BER, GET-BULK) — só leitura
+│   ├── history.py           # séries temporais em memória (por sessão)
 │   └── profiles.py          # equipamentos salvos (~/.huaweibox)
 └── ui/
     ├── login.py             # tela de conexão estilo WinBox
@@ -116,9 +176,17 @@ huawei_winbox/
     ├── forms.py             # formulários genéricos
     ├── worker.py            # execução SSH fora da thread da UI
     ├── style.py             # tema visual (QSS)
-    ├── widgets/             # widgets reutilizáveis (gráfico de tráfego)
-    └── panels/              # Interfaces, Tráfego, VLANs, BGP, OSPF, MPLS...
+    ├── widgets/             # gráfico multi-série e sparklines (QPainter)
+    └── panels/              # Painel, Interfaces, Tráfego, Configuração, BGP...
 ```
+
+### Onde os dados ficam
+
+O histórico vive em memória, vinculado à sessão (`WeakKeyDictionary`), e
+sobrevive ao fechar/reabrir os painéis. São ~5400 amostras por série
+(90 min a 1 s, 7h30 a 5 s) guardadas em `array('d')` circular: 48 portas
+ocupam cerca de 6 MB. Nada é gravado em disco — para levar embora, use
+*CSV…* no gráfico ou *Salvar em arquivo…* na Configuração.
 
 ## Avisos
 
@@ -139,4 +207,9 @@ huawei_winbox/
 - A opção "Lembrar senha" grava a senha apenas ofuscada (base64) no disco;
   em ambientes sensíveis, deixe desmarcada.
 - Configurações aplicadas **não são gravadas na flash automaticamente** —
-  use *Salvar configuração* no módulo Sistema.
+  use *Salvar configuração* no módulo Sistema. O módulo **Configuração**
+  tem o botão *Comparar com a salva*, que lista exatamente o que ainda
+  está só na memória e se perderia num reboot.
+- O painel **Configuração** também vigia alterações: marque um instantâneo
+  e escolha um intervalo em *Vigiar mudanças* para ser avisado quando a
+  configuração mudar — inclusive por outra pessoa, em outra sessão.

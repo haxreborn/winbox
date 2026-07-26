@@ -254,8 +254,10 @@ _DRAW = {
 
 # Cada item do menu lateral -> (desenho, cor)
 _MENU_ICON = {
+    "Painel": ("grid", BLUE),
     "Interfaces": ("ethernet", BLUE),
     "Tráfego (gráfico)": ("chart", GREEN),
+    "Configuração": ("doc", INDIGO),
     "Endereços IP": ("tag", TEAL),
     "VLANs": ("layers", ORANGE),
     "Tabela MAC": ("grid", PURPLE),
