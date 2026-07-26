@@ -26,6 +26,7 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
 
   | Módulo | O que faz |
   |---|---|
+  | Localizar | **em que porta está este cliente?** — informe o IP, o MAC (em qualquer notação) ou parte da descrição e o app encadeia ARP → tabela MAC → sessão PPPoE → rota, mostrando a porta e os comandos usados |
   | Painel | visão geral ao vivo: CPU, memória, temperatura, banda total, ranking das portas mais carregadas, estado de BGP/OSPF/interfaces e identificação do equipamento — tudo numa janela só |
   | Interfaces | lista com RX/TX ao vivo (vindos do coletor, sem consulta extra), habilitar/desabilitar, descrição, IP, MTU e **Ver no gráfico**; duplo clique abre os detalhes da porta com o gráfico dela embutido |
   | Tráfego (gráfico) | gráfico em tempo real de **várias interfaces ao mesmo tempo**, em modo sobreposto, grade ou empilhado; fonte **SNMP** ou **CLI (SSH)** |
@@ -121,6 +122,21 @@ O cliente SNMP v2c é implementado internamente (codificação BER própria),
 então **não há dependências novas** — o projeto continua usando apenas
 PySide6 e paramiko.
 
+## Localizar: em que porta está este cliente
+
+O suporte recebe um IP ou um MAC e precisa achar a porta. À mão são três
+ou quatro comandos e um cruzamento mental; aqui é uma busca só. O
+aplicativo **encadeia** as consultas — o ARP dá o MAC, a tabela MAC dá a
+porta física, o BRAS dá a sessão PPPoE e a rota diz por onde o tráfego sai
+— e ordena os achados por utilidade: a tabela MAC aponta onde o
+dispositivo realmente está, o ARP costuma apontar a interface lógica.
+
+O MAC pode ser colado em qualquer notação (`00:e0:fc:12:34:56`,
+`00-E0-FC-12-34-56`, `00e0fc123456`); o aplicativo converte para a forma
+do VRP. Dos resultados dá para pular direto ao gráfico da porta ou à lista
+de interfaces, e o botão *Copiar resumo* gera um texto pronto para colar
+num chamado. Os comandos executados ficam à vista, como no resto do app.
+
 ## Saúde das portas: qual fibra vai cair primeiro
 
 O módulo **Saúde das portas** responde duas perguntas do dia a dia que
@@ -209,6 +225,7 @@ huawei_winbox/
 │   ├── history.py           # séries temporais em memória (por sessão)
 │   ├── workspace.py         # layout e preferências por equipamento
 │   ├── backup.py            # histórico de configurações em disco
+│   ├── locate.py            # busca encadeada IP → MAC → porta
 │   └── profiles.py          # equipamentos salvos (~/.huaweibox)
 └── ui/
     ├── login.py             # tela de conexão estilo WinBox

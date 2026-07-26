@@ -47,6 +47,7 @@ from .panels.snmp import SnmpPanel
 from .panels.logs import LogsPanel
 from .panels.alarms import AlarmsPanel
 from .panels.porthealth import PortHealthPanel
+from .panels.locate import LocatePanel
 from .panels.tools import ToolsPanel
 from .panels.system import SystemPanel
 from .panels.terminal import TerminalPanel
@@ -60,6 +61,7 @@ from .panels.mactable import MacTablePanel
 
 _MENU = [
     ("Painel", DashboardPanel),
+    ("Localizar", LocatePanel),
     ("Interfaces", InterfacesPanel),
     ("Tráfego (gráfico)", TrafficPanel),
     ("Configuração", ConfigPanel),

@@ -199,6 +199,19 @@ class InterfacesPanel(BasePanel):
             btn.clicked.connect(slot)
             layout.addWidget(btn)
 
+    def focus_payload(self, payload) -> None:
+        """Filtra a tabela numa porta pedida por outro painel."""
+        name = payload[0] if isinstance(payload, (list, tuple)) else payload
+        if not name:
+            return
+        self.find_edit.setText(str(name))
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is not None and item.text() == str(name):
+                self.table.selectRow(row)
+                self.table.scrollToItem(item)
+                break
+
     def _show_in_graph(self):
         """Abre o Tráfego já com as portas selecionadas marcadas."""
         names = sorted({item.text() for item in self.table.selectedItems()
