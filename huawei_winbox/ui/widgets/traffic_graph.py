@@ -725,6 +725,131 @@ def _elapsed_label(seconds: float, span: float) -> str:
     return f"-{seconds:.0f}s"
 
 
+class LatencyChart(QWidget):
+    """Latência do ping ao longo do tempo, com as perdas marcadas.
+
+    Um gráfico de banda não serve aqui: a unidade é milissegundo, e o que
+    interessa junto da curva é *onde* os pacotes se perderam. As perdas
+    aparecem como marcas vermelhas na base — um trecho pontilhado de
+    vermelho diz na hora que o enlace oscilou, coisa que a média de
+    min/méd/máx esconde.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(150)
+        self._samples: list[tuple[float, float | None]] = []
+        self._title = ""
+
+    def clear(self) -> None:
+        self._samples = []
+        self.update()
+
+    def add(self, when: float, rtt: float | None) -> None:
+        """``rtt`` em ms, ou ``None`` para um pacote perdido."""
+        self._samples.append((when, rtt))
+        if len(self._samples) > 4000:
+            del self._samples[:len(self._samples) - 4000]
+        self.update()
+
+    def set_title(self, title: str) -> None:
+        self._title = title
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.fillRect(self.rect(), _BG)
+
+        top = 4
+        if self._title:
+            font = QFont(self.font())
+            font.setBold(True)
+            painter.setFont(font)
+            painter.setPen(_TITLE)
+            painter.drawText(8, top, self.width() - 16, 15,
+                             Qt.AlignVCenter | Qt.AlignLeft, self._title)
+            top += 17
+
+        rect = QRectF(46, top, max(20.0, self.width() - 56),
+                      max(20.0, self.height() - top - 22))
+        painter.setPen(QPen(_BORDER, 1))
+        painter.drawRect(rect)
+
+        answered = [s for s in self._samples if s[1] is not None]
+        if len(self._samples) < 2:
+            painter.setPen(_AXIS_TEXT)
+            painter.drawText(rect, Qt.AlignCenter,
+                             "Aguardando respostas do ping…")
+            painter.end()
+            return
+
+        ceiling = _nice_ceiling(max((s[1] for s in answered), default=1.0))
+        font = QFont(self.font())
+        font.setPointSizeF(max(6.5, self.font().pointSizeF() - 1))
+        painter.setFont(font)
+        for i in range(5):
+            frac = i / 4
+            y = rect.bottom() - frac * rect.height()
+            if i:
+                painter.setPen(QPen(_GRID, 1))
+                painter.drawLine(QPointF(rect.left() + 1, y),
+                                 QPointF(rect.right() - 1, y))
+            painter.setPen(_AXIS_TEXT)
+            painter.drawText(QRectF(0, y - 8, rect.left() - 4, 16),
+                             Qt.AlignRight | Qt.AlignVCenter,
+                             f"{ceiling * frac:.0f} ms")
+
+        t_start = self._samples[0][0]
+        span = max(0.001, self._samples[-1][0] - t_start)
+        scale_x = rect.width() / span
+        scale_y = rect.height() / ceiling
+
+        def x_of(when: float) -> float:
+            return rect.left() + (when - t_start) * scale_x
+
+        # Perdas: faixas verticais vermelhas na base.
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(226, 0, 26, 70))
+        width = max(1.5, rect.width() / max(1, len(self._samples)))
+        for when, rtt in self._samples:
+            if rtt is None:
+                painter.drawRect(QRectF(x_of(when) - width / 2,
+                                        rect.bottom() - 8, width, 7))
+        painter.setBrush(Qt.NoBrush)
+
+        # Curva: cada trecho contínuo de respostas vira uma polilinha, para
+        # a linha não "pular por cima" das perdas como se nada tivesse
+        # acontecido.
+        painter.setClipRect(rect)
+        color = QColor("#1f6fb2")
+        run: list[QPointF] = []
+        for when, rtt in self._samples:
+            if rtt is None:
+                if len(run) > 1:
+                    painter.setPen(QPen(color, 1.6))
+                    painter.drawPolyline(QPolygonF(run))
+                run = []
+                continue
+            run.append(QPointF(x_of(when),
+                               rect.bottom() - min(rtt, ceiling) * scale_y))
+        if len(run) > 1:
+            painter.setPen(QPen(color, 1.6))
+            painter.drawPolyline(QPolygonF(run))
+        elif len(run) == 1:
+            painter.setPen(QPen(color, 3))
+            painter.drawPoint(run[0])
+        painter.setClipping(False)
+
+        painter.setPen(_AXIS_TEXT)
+        painter.drawText(QRectF(rect.left(), rect.bottom() + 3, 90, 14),
+                         Qt.AlignLeft | Qt.AlignTop,
+                         _elapsed_label(span, span))
+        painter.drawText(QRectF(rect.right() - 60, rect.bottom() + 3, 60, 14),
+                         Qt.AlignRight | Qt.AlignTop, "agora")
+        painter.end()
+
+
 class MiniChart(QWidget):
     """Sparkline com valor atual — usada nos cartões do Painel."""
 

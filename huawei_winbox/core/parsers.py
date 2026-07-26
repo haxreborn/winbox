@@ -988,6 +988,115 @@ def parse_mac_table(text: str) -> list[dict]:
 
 
 # ──────────────────────────────────────────────────────────────────────────── #
+# Ping / traceroute
+# ──────────────────────────────────────────────────────────────────────────── #
+_PING_REPLY_RE = re.compile(
+    r"(?:Reply from|bytes from)\s+(?P<peer>[0-9a-fA-F.:]+)"
+    r".*?time\s*[=<]\s*(?P<rtt>[\d.]+)\s*ms", re.IGNORECASE)
+_PING_TIMEOUT_RE = re.compile(
+    r"Request\s+time\s*out|Destination\s+(?:host\s+)?unreachable"
+    r"|no\s+answer", re.IGNORECASE)
+_PING_STATS_RE = re.compile(
+    r"round-trip\s+min/avg/max\s*=\s*([\d.]+)\s*/\s*([\d.]+)\s*/\s*([\d.]+)",
+    re.IGNORECASE)
+
+
+def parse_ping(text: str) -> dict:
+    """Saída do ``ping`` do VRP -> estatísticas e tempos de cada resposta.
+
+    Retorna ``{sent, received, lost, loss_pct, rtts, rtt_min, rtt_avg,
+    rtt_max, peer}``. Os tempos individuais (``rtts``) são o que alimenta o
+    gráfico de latência do ping contínuo; quando o equipamento só devolve o
+    resumo, os valores min/méd/máx ainda são aproveitados.
+    """
+    rtts: list[float] = []
+    timeouts = 0
+    peer = ""
+    for line in text.splitlines():
+        match = _PING_REPLY_RE.search(line)
+        if match:
+            # "Reply from 8.8.8.8:" — o dois-pontos separa o endereço do
+            # resto da linha e não faz parte dele.
+            peer = peer or match.group("peer").rstrip(":")
+            try:
+                rtts.append(float(match.group("rtt")))
+            except ValueError:
+                pass
+            continue
+        if _PING_TIMEOUT_RE.search(line):
+            timeouts += 1
+
+    sent = received = None
+    match = re.search(r"(\d+)\s+packet\(?s?\)?\s+transmitted", text, re.I)
+    if match:
+        sent = int(match.group(1))
+    match = re.search(r"(\d+)\s+packet\(?s?\)?\s+received", text, re.I)
+    if match:
+        received = int(match.group(1))
+    # Formato compacto: "5 packet(s) transmitted, 5 received, 0.00% packet loss"
+    if sent is None or received is None:
+        match = re.search(r"(\d+)\s+\S*\s*transmitted,\s*(\d+)\s+received",
+                          text, re.I)
+        if match:
+            sent = int(match.group(1))
+            received = int(match.group(2))
+    if sent is None:
+        sent = len(rtts) + timeouts
+    if received is None:
+        received = len(rtts)
+
+    loss_pct = None
+    match = re.search(r"([\d.]+)\s*%\s*packet\s*loss", text, re.I)
+    if match:
+        loss_pct = float(match.group(1))
+    elif sent:
+        loss_pct = (sent - received) / sent * 100.0
+
+    rtt_min = rtt_avg = rtt_max = None
+    match = _PING_STATS_RE.search(text)
+    if match:
+        rtt_min, rtt_avg, rtt_max = (float(match.group(i)) for i in (1, 2, 3))
+    elif rtts:
+        rtt_min, rtt_max = min(rtts), max(rtts)
+        rtt_avg = sum(rtts) / len(rtts)
+
+    return {
+        "peer": peer,
+        "sent": sent,
+        "received": received,
+        "lost": max(0, (sent or 0) - (received or 0)),
+        "loss_pct": loss_pct,
+        "rtts": rtts,
+        "rtt_min": rtt_min,
+        "rtt_avg": rtt_avg,
+        "rtt_max": rtt_max,
+    }
+
+
+def parse_traceroute(text: str) -> list[dict]:
+    """``tracert`` -> [{hop, host, times}] — um registro por salto."""
+    rows = []
+    pattern = re.compile(r"^\s*(\d{1,2})\s+(.*)$")
+    for line in text.splitlines():
+        match = pattern.match(line.rstrip())
+        if not match:
+            continue
+        hop, rest = match.group(1), match.group(2).strip()
+        if not rest:
+            continue
+        host_match = re.search(r"[0-9]{1,3}(?:\.[0-9]{1,3}){3}|[0-9a-fA-F:]{4,}",
+                               rest)
+        times = re.findall(r"([\d.]+)\s*ms", rest)
+        rows.append({
+            "hop": hop,
+            "host": host_match.group(0) if host_match else
+                    ("*" if "*" in rest else ""),
+            "times": [float(t) for t in times],
+        })
+    return rows
+
+
+# ──────────────────────────────────────────────────────────────────────────── #
 # Logbuffer
 # ──────────────────────────────────────────────────────────────────────────── #
 # Severidade do VRP (mesma escala do syslog): 0 é o mais grave.

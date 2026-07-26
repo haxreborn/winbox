@@ -46,7 +46,7 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
   | Vizinhos (LLDP) | descoberta de equipamentos conectados, como o *Neighbors* do WinBox |
   | Serviços | NTP, comunidade SNMP v2c, SSH (STelnet) e LLDP |
   | Logs | eventos do `display logbuffer` em tabela, coloridos por severidade, com filtro por nível/módulo/texto, contadores e modo **Acompanhar** que destaca o que chegou de novo |
-  | Ferramentas | ping e traceroute executados a partir do equipamento |
+  | Ferramentas | ping, **ping contínuo com gráfico de latência** (perdas marcadas em vermelho, variação/jitter) e traceroute em tabela — tudo executado a partir do equipamento, com origem e VRF opcionais |
   | Sistema | versão, CPU, memória, uptime, renomear (`sysname`), **salvar configuração** |
   | Novo Terminal | console CLI integrado usando a mesma sessão SSH |
 
