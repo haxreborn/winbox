@@ -45,7 +45,7 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
   | ACL / Firewall | regras permit/deny, aplicar `traffic-filter` nas interfaces |
   | Firewall / NAT | editor rule-by-rule de ACL, traffic-policy (MQC: classifier/behavior/policy) e NAT, com **assistente de CGNAT** (cadeia ACL→redirect ip-nexthop→policy global) usada nos NE8000 |
   | Usuários | contas locais AAA: criar/remover, privilégio e serviços (protege o usuário da sessão) |
-  | Vizinhos (LLDP) | descoberta de equipamentos conectados, como o *Neighbors* do WinBox |
+  | Vizinhos (LLDP) | lista **e diagrama** dos equipamentos conectados, com endereço de gerência; a espessura de cada ligação acompanha o tráfego real da porta, então o uplink salta aos olhos |
   | Serviços | NTP, comunidade SNMP v2c, SSH (STelnet) e LLDP |
   | Saúde das portas | diagnóstico óptico (DOM) de todos os transceptores com os **limiares do próprio módulo** e a **folga em dB** até o piso, mais os erros que subiram na janela escolhida (não o acumulado desde o boot) |
   | Alarmes | `display alarm active` — o que o equipamento está reclamando **agora**, por severidade, mais o histórico de traps; duplo clique num alarme que cita uma porta abre o gráfico dela |
@@ -122,6 +122,25 @@ lendo `sysName`, `sysUpTime`, `sysDescr` e a contagem de interfaces.
 O cliente SNMP v2c é implementado internamente (codificação BER própria),
 então **não há dependências novas** — o projeto continua usando apenas
 PySide6 e paramiko.
+
+## Topologia: onde este equipamento está pendurado
+
+O *Neighbors* do WinBox é uma lista, e uma lista responde *quem* está
+conectado. O módulo **Vizinhos (LLDP)** ganhou uma aba de **diagrama**, que
+responde a pergunta que se faz ao abrir uma caixa pela primeira vez: como
+ela está no meio da rede.
+
+O equipamento fica no centro e os vizinhos em volta, cada um com o nome, o
+endereço de gerência e a porta remota. A **espessura de cada ligação
+acompanha o tráfego real da porta local**, então o uplink de verdade salta
+aos olhos no meio dos links de acesso; portas fora do ar aparecem
+tracejadas. Um vizinho ligado por várias portas (agregação) vira uma caixa
+só, com todas as ligações contadas. Clicar numa ligação abre o gráfico
+daquela porta.
+
+O arranjo calcula o raio de que precisa para as caixas não se
+sobreporem — com muitos vizinhos o desenho cresce e a área rola, em vez de
+espremer tudo. Testado até 14 vizinhos.
 
 ## Verificação: este equipamento está bem?
 
@@ -271,7 +290,7 @@ huawei_winbox/
     ├── forms.py             # formulários genéricos
     ├── worker.py            # execução SSH fora da thread da UI
     ├── style.py             # tema visual (QSS)
-    ├── widgets/             # gráfico multi-série e sparklines (QPainter)
+    ├── widgets/             # gráfico multi-série, sparklines e topologia (QPainter)
     └── panels/              # Painel, Interfaces, Tráfego, Configuração, BGP...
 ```
 

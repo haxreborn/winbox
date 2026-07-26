@@ -746,6 +746,82 @@ def parse_lldp_neighbors(text: str) -> list[dict]:
     return rows
 
 
+def parse_lldp_neighbors_detail(text: str) -> list[dict]:
+    """``display lldp neighbor`` -> vizinhos com endereço de gerência.
+
+    O ``brief`` dá só nome e porta. O verboso traz também a descrição da
+    porta remota, o endereço de gerência e as capacidades do vizinho — o
+    suficiente para o diagrama dizer *quem* é cada caixa e não apenas
+    *que existe uma*.
+
+    O VRP anuncia o dono do bloco na linha ``<porta local> has N
+    neighbor(s)``; os campos vêm como ``Chave : valor`` até o próximo
+    bloco. Um ``Neighbor index`` novo dentro da mesma porta começa outro
+    vizinho (acontece quando há um hub ou uma ponte no meio).
+    """
+    rows: list[dict] = []
+    local = ""
+    current: dict | None = None
+    owner_re = re.compile(
+        rf"^({_IFACE_NAME})\s+has\s+\d+\s+neighbor", re.IGNORECASE)
+    field_re = re.compile(r"^([A-Za-z][A-Za-z /]{2,40}?)\s*:\s*(.*)$")
+
+    def flush() -> None:
+        if current and (current["neighbor_dev"] or current["neighbor_intf"]):
+            rows.append(current)
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or re.match(r"^[-=]{3,}$", line):
+            continue
+        match = owner_re.match(line)
+        if match:
+            flush()
+            local = expand_iface_name(match.group(1))
+            current = _empty_neighbor(local)
+            continue
+        if re.match(r"^Neighbor index", line, re.IGNORECASE):
+            if current and (current["neighbor_dev"]
+                            or current["neighbor_intf"]):
+                flush()
+                current = _empty_neighbor(local)
+            continue
+        if current is None:
+            continue
+        field = field_re.match(line)
+        if not field:
+            continue
+        key = field.group(1).strip().lower()
+        value = field.group(2).strip()
+        if key == "system name":
+            current["neighbor_dev"] = value
+        elif key == "port id":
+            current["neighbor_intf"] = expand_iface_name(value)
+        elif key == "port description":
+            current["port_description"] = value
+        elif key == "management address":
+            # "ipv4" na linha do tipo, o endereço na seguinte — só o que
+            # parece endereço entra.
+            if re.match(r"^[\d.]+$|^[0-9A-Fa-f:]+:", value):
+                current["management_ip"] = value
+        elif key == "chassis id":
+            current["chassis_id"] = value
+        elif key.startswith("system capabilities enabled"):
+            current["capabilities"] = value
+        elif key == "system description":
+            current["system_description"] = value
+        elif key == "expired time":
+            current["exptime"] = re.sub(r"\D", "", value)
+    flush()
+    return rows
+
+
+def _empty_neighbor(local: str) -> dict:
+    return {"local": local, "neighbor_dev": "", "neighbor_intf": "",
+            "port_description": "", "management_ip": "", "chassis_id": "",
+            "capabilities": "", "system_description": "", "exptime": ""}
+
+
 def parse_ntp_status(text: str) -> str:
     m = re.search(r"clock status\s*:\s*(\S+)", text, re.I)
     return m.group(1) if m else "—"
