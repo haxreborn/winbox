@@ -22,10 +22,10 @@ from PySide6.QtGui import QColor, QPainter, QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QGroupBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QStyledItemDelegate,
-    QSizePolicy,
+    QSizePolicy, QPushButton, QCheckBox, QFileDialog, QMessageBox,
 )
 
-from ...core import parsers, telemetry
+from ...core import parsers, report, telemetry
 from ...core import history as history_mod
 from ...core.scheduler import BACKGROUND
 from ..worker import run_async
@@ -88,6 +88,22 @@ class DashboardPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
         root.setSpacing(6)
+
+        bar = QHBoxLayout()
+        bar.setSpacing(4)
+        report_btn = QPushButton("Gerar relatório…")
+        report_btn.setToolTip(
+            "Cria um arquivo HTML autocontido com o retrato do equipamento: "
+            "identificação, carga, interfaces, óptica, alarmes, vizinhos e "
+            "roteamento. Abre em qualquer navegador e imprime bem.")
+        report_btn.clicked.connect(self._build_report)
+        bar.addWidget(report_btn)
+        self.report_config_chk = QCheckBox("incluir a configuração completa")
+        self.report_config_chk.setToolTip(
+            "Anexa o 'display current-configuration' ao final do relatório.")
+        bar.addWidget(self.report_config_chk)
+        bar.addStretch(1)
+        root.addLayout(bar)
 
         root.addWidget(self._build_cards())
 
@@ -372,6 +388,104 @@ class DashboardPanel(QWidget):
             self._slow_busy = False
 
         run_async(fetch, done, fail)
+
+    # ================================================================== #
+    # Relatório
+    # ================================================================== #
+    def _build_report(self) -> None:
+        stamp = time.strftime("%Y%m%d-%H%M")
+        path, _filter = QFileDialog.getSaveFileName(
+            self, "Salvar relatório",
+            f"relatorio-{self.session.hostname}-{stamp}.html",
+            "Página HTML (*.html);;Todos (*)")
+        if not path:
+            return
+        include_config = self.report_config_chk.isChecked()
+        self.status.setText("Coletando dados para o relatório…")
+        session = self.session
+        engine = self.engine
+        snapshot = engine.snapshot()
+        meta = engine.interface_meta()
+        totals = engine.totals()
+
+        def query(command: str, timeout: float) -> str:
+            try:
+                # Prioridade normal: o usuário pediu e está esperando, mas
+                # não é uma configuração — não precisa furar a fila.
+                return session.run(command, timeout=timeout, ttl=20.0,
+                                   tag="dashboard")
+            except Exception:                # noqa: BLE001 — seção some
+                return ""
+
+        def collect() -> dict:
+            version = parsers.parse_version(query("display version", 20.0))
+            interfaces = parsers.parse_interface_description(
+                query("display interface description", 40.0))
+            optics = {}
+            for command in ("display transceiver diagnosis interface",
+                            "display transceiver all"):
+                text = query(command, 60.0)
+                optics = parsers.parse_transceiver_diagnosis(text)
+                if optics:
+                    break
+            # Aproveita os limiares que o painel Saúde das portas já
+            # descobriu: sem eles o relatório sairia com "sem limiar" em
+            # todas as portas, sem conseguir apontar nenhuma como crítica.
+            learned = engine.optical_thresholds()
+            for name, entry in optics.items():
+                values = learned.get(name)
+                if values:
+                    entry.update(values)
+                    parsers.evaluate_dom(entry)
+            data = {
+                "device": {
+                    "hostname": session.hostname,
+                    "host": f"{session.host}:{session.port}",
+                    "product": version.get("product", ""),
+                    "software": version.get("software", ""),
+                    "uptime": version.get("uptime", ""),
+                },
+                "health": snapshot["health"],
+                "interfaces": interfaces,
+                "rates": snapshot["rates"],
+                "speeds": {name: info.get("speed_bps", 0)
+                           for name, info in meta.items()},
+                "optics": optics,
+                "alarms": parsers.parse_active_alarms(
+                    query("display alarm active", 30.0)),
+                "neighbors": parsers.parse_lldp_neighbors(
+                    query("display lldp neighbor brief", 25.0)),
+                "bgp": parsers.parse_bgp_peers(query("display bgp peer", 30.0)),
+                "ospf": parsers.parse_ospf_peers(
+                    query("display ospf peer brief", 25.0)),
+                "totals": (parsers.format_bps(totals[0]),
+                           parsers.format_bps(totals[1])),
+            }
+            if include_config:
+                data["config"] = query("display current-configuration", 120.0)
+            return data
+
+        def done(data: dict) -> None:
+            try:
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(report.build(data))
+            except OSError as exc:
+                self.status.setText("")
+                QMessageBox.warning(self, self.title,
+                                    f"Falha ao gravar o relatório: {exc}")
+                return
+            self.status.setText(f"Relatório salvo em {path}")
+            QMessageBox.information(
+                self, self.title,
+                f"Relatório gerado:\n{path}\n\nAbra no navegador para ver ou "
+                f"imprimir.")
+
+        def fail(message: str) -> None:
+            self.status.setText("")
+            QMessageBox.warning(self, self.title,
+                                f"Falha ao coletar os dados: {message}")
+
+        run_async(collect, done, fail)
 
     # ------------------------------------------------------------------ #
     def hideEvent(self, event) -> None:

@@ -510,6 +510,7 @@ class MainWindow(QMainWindow):
             for label, _cls in _MENU
         ]
         entries += [
+            ("Gerar relatório do equipamento", "ação", self._open_report),
             ("Salvar configuração na flash", "ação", self._save_config),
             ("Fechar todas as janelas", "ação",
              self.mdi.closeAllSubWindows),
@@ -523,6 +524,15 @@ class MainWindow(QMainWindow):
             entries.append(("Alternar Safe Mode", "ação",
                             self.safe_btn.toggle))
         return entries
+
+    def _open_report(self) -> None:
+        """Abre o Painel e dispara a geração do relatório."""
+        self.open_named_panel("Painel")
+        window = self._windows.get("Painel")
+        if window is not None and shiboken6.isValid(window):
+            panel = window.widget()
+            if hasattr(panel, "_build_report"):
+                panel._build_report()
 
     def _open_palette(self) -> None:
         dialog = CommandPalette(self._palette_entries(), self)

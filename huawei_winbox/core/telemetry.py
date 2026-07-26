@@ -109,6 +109,8 @@ class TelemetryEngine:
             "cpu": None, "memory": None, "temperature": None}
         self._health_at = 0.0
         self._errors_at = 0.0
+        # Limiares de alarme dos módulos ópticos, por porta.
+        self._optical: dict[str, dict] = {}
 
     # ================================================================== #
     # Configuração
@@ -221,6 +223,23 @@ class TelemetryEngine:
     # ================================================================== #
     # Retrato para a interface
     # ================================================================== #
+    # -- limiares ópticos aprendidos ----------------------------------- #
+    # Ficam aqui, e não no painel que os descobriu, porque são
+    # conhecimento sobre o EQUIPAMENTO: o relatório e qualquer outra tela
+    # devem enxergar os mesmos limiares sem ter que consultá-los de novo.
+    def remember_optical_thresholds(self, name: str, values: dict) -> None:
+        if not name or not values:
+            return
+        with self._lock:
+            self._optical.setdefault(name, {}).update(values)
+
+    def optical_thresholds(self, name: str | None = None):
+        with self._lock:
+            if name is None:
+                return {key: dict(value)
+                        for key, value in self._optical.items()}
+            return dict(self._optical.get(name, {}))
+
     def snapshot(self) -> dict:
         """Cópia consistente do estado — barata, sem I/O."""
         with self._lock:

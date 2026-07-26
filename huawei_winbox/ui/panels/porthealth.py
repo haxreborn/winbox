@@ -77,9 +77,8 @@ class PortHealthPanel(QWidget):
         self._optics: dict[str, dict] = {}
         self._raw = ""
         # Limiares são propriedade do módulo, não medição: lidos uma vez por
-        # porta e guardados. A forma de tabela do diagnóstico não os traz, e
-        # sem eles não dá para dizer se −13 dBm é bom ou ruim.
-        self._thresholds: dict[str, dict] = {}
+        # porta e guardados no motor — assim o relatório e qualquer outra
+        # tela enxergam os mesmos sem consultar de novo.
         self._threshold_misses: set[str] = set()
         self._learning = False
 
@@ -264,7 +263,7 @@ class PortHealthPanel(QWidget):
     def _apply_thresholds(self) -> None:
         """Aplica os limiares já conhecidos e reavalia cada porta."""
         for name, entry in self._optics.items():
-            known = self._thresholds.get(name)
+            known = self.engine.optical_thresholds(name)
             if not known:
                 continue
             entry.update(known)
@@ -281,9 +280,10 @@ class PortHealthPanel(QWidget):
         """
         if self._learning:
             return
+        known = self.engine.optical_thresholds()
         pending = [name for name, entry in self._optics.items()
                    if entry["rx_low"] is None
-                   and name not in self._thresholds
+                   and name not in known
                    and name not in self._threshold_misses
                    and parsers.is_physical_iface(name)]
         if not pending:
@@ -323,16 +323,17 @@ class PortHealthPanel(QWidget):
             self._learning = False
             for name in batch:
                 if name in found:
-                    self._thresholds[name] = found[name]
+                    self.engine.remember_optical_thresholds(name, found[name])
                 else:
                     # Módulo sem DOM ou comando recusado: não insiste.
                     self._threshold_misses.add(name)
             if found:
                 self._apply_thresholds()
                 self._fill_optics()
+            learned = self.engine.optical_thresholds()
             remaining = sum(
                 1 for name, entry in self._optics.items()
-                if entry["rx_low"] is None and name not in self._thresholds
+                if entry["rx_low"] is None and name not in learned
                 and name not in self._threshold_misses)
             if remaining and self.isVisible():
                 QTimer.singleShot(700, self._learn_thresholds)

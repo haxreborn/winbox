@@ -27,7 +27,7 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
   | Módulo | O que faz |
   |---|---|
   | Localizar | **em que porta está este cliente?** — informe o IP, o MAC (em qualquer notação) ou parte da descrição e o app encadeia ARP → tabela MAC → sessão PPPoE → rota, mostrando a porta e os comandos usados |
-  | Painel | visão geral ao vivo: CPU, memória, temperatura, banda total, ranking das portas mais carregadas, estado de BGP/OSPF/interfaces e identificação do equipamento — tudo numa janela só |
+  | Painel | visão geral ao vivo: CPU, memória, temperatura, banda total, ranking das portas mais carregadas, estado de BGP/OSPF/interfaces e identificação do equipamento — tudo numa janela só; também gera o **relatório HTML** do equipamento |
   | Interfaces | lista com RX/TX ao vivo (vindos do coletor, sem consulta extra), habilitar/desabilitar, descrição, IP, MTU e **Ver no gráfico**; duplo clique abre os detalhes da porta com o gráfico dela embutido |
   | Tráfego (gráfico) | gráfico em tempo real de **várias interfaces ao mesmo tempo**, em modo sobreposto, grade ou empilhado; fonte **SNMP** ou **CLI (SSH)** |
   | Configuração | baixa o `display current-configuration`, navega por blocos, procura texto, **compara com a config salva** (mostra o que se perderia num reboot), guarda **histórico de cópias em disco** e compara duas datas, tira instantâneos, salva em arquivo e envia blocos colados |
@@ -121,6 +121,19 @@ lendo `sysName`, `sysUpTime`, `sysDescr` e a contagem de interfaces.
 O cliente SNMP v2c é implementado internamente (codificação BER própria),
 então **não há dependências novas** — o projeto continua usando apenas
 PySide6 e paramiko.
+
+## Relatório do equipamento em um clique
+
+*Painel → Gerar relatório…* (ou `Ctrl+K` → "relatório") produz um arquivo
+**HTML autocontido** — sem CSS externo, sem imagem, sem script — com o
+retrato do equipamento: identificação e tempo ligado, carga, alarmes
+ativos, diagnóstico óptico com a folga de cada porta, tabela de interfaces
+com uso e descrição, vizinhos LLDP e o estado de BGP/OSPF. Opcionalmente
+anexa a configuração completa.
+
+Abre em qualquer navegador, imprime bem e serve tanto para anexar num
+chamado quanto para guardar como registro da manutenção. A coleta é só
+leitura: nada é alterado no equipamento para produzir o relatório.
 
 ## Localizar: em que porta está este cliente
 
@@ -226,6 +239,7 @@ huawei_winbox/
 │   ├── workspace.py         # layout e preferências por equipamento
 │   ├── backup.py            # histórico de configurações em disco
 │   ├── locate.py            # busca encadeada IP → MAC → porta
+│   ├── report.py            # relatório HTML autocontido
 │   └── profiles.py          # equipamentos salvos (~/.huaweibox)
 └── ui/
     ├── login.py             # tela de conexão estilo WinBox
