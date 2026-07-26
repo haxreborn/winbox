@@ -79,14 +79,16 @@ def format_bps(bps: int) -> str:
     return f"{bps} bps"
 
 
-def parse_interface_rates(text: str) -> dict[str, tuple[str, str]]:
-    """``display interface`` (todas) -> {nome: (rx, tx)} em Mbps/Gbps.
+def parse_interface_rates_bps(text: str) -> dict[str, tuple[int, int]]:
+    """``display interface`` (uma ou todas) -> {nome: (rx_bps, tx_bps)}.
 
-    Percorre o dump completo associando cada bloco "X current state" às
-    linhas "input rate ... bits/sec" / "output rate ... bits/sec" que o
-    seguem ("Last 300 seconds input rate", "300 seconds output rate"...).
+    Percorre o dump associando cada bloco "X current state" às linhas
+    "input rate ... bits/sec" / "output rate ... bits/sec" que o seguem
+    ("Last 300 seconds input rate", "300 seconds output rate"...). Retorna
+    os valores BRUTOS em bits/s (inteiros) — base numérica do gráfico de
+    tráfego. ``parse_interface_rates`` formata isto para exibição.
     """
-    rates: dict[str, tuple[str, str]] = {}
+    rates: dict[str, tuple[int, int]] = {}
     current = ""
     rx = tx = -1
     state_re = re.compile(rf"^({_IFACE_NAME}) current state\s*:", re.I)
@@ -95,8 +97,7 @@ def parse_interface_rates(text: str) -> dict[str, tuple[str, str]]:
 
     def flush():
         if current and rx >= 0 and tx >= 0:
-            rates[expand_iface_name(current)] = (format_bps(rx),
-                                                 format_bps(tx))
+            rates[expand_iface_name(current)] = (rx, tx)
 
     for line in text.splitlines():
         s = line.strip()
@@ -114,6 +115,12 @@ def parse_interface_rates(text: str) -> dict[str, tuple[str, str]]:
             tx = int(m.group(1).replace(",", ""))
     flush()
     return rates
+
+
+def parse_interface_rates(text: str) -> dict[str, tuple[str, str]]:
+    """``display interface`` (todas) -> {nome: (rx, tx)} em Mbps/Gbps."""
+    return {name: (format_bps(rx), format_bps(tx))
+            for name, (rx, tx) in parse_interface_rates_bps(text).items()}
 
 
 def parse_interface_detail(text: str) -> dict:
@@ -948,4 +955,123 @@ def parse_qos_policies(text: str) -> list[dict]:
     if not rows:
         rows.append({"type": "—", "name": "Nenhuma política aplicada",
                      "detail": "", "applied": ""})
+    return rows
+
+
+# ──────────────────────────────────────────────────────────────────────────── #
+# BRAS / PPPoE (NE8000) — assinantes, domínios
+# ──────────────────────────────────────────────────────────────────────────── #
+_MAC_RE = re.compile(r"[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}")
+_IPV4_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
+
+
+def parse_access_users(text: str) -> list[dict]:
+    """``display access-user`` -> [{userid, username, ip, mac, interface, domain}]
+
+    Os assinantes de banda larga (PPPoE/IPoE) aparecem em formatos que
+    variam bastante entre versões do VRP. Em vez de depender de colunas
+    fixas, ancora cada linha na presença simultânea de um MAC
+    (xxxx-xxxx-xxxx) e de um IPv4 — assim funciona na maioria dos layouts.
+    Nomes longos fazem o VRP quebrar a linha (UserID/Username numa linha,
+    IP/MAC/interface na seguinte); essas linhas são reunidas.
+    """
+    rows = []
+    pending_user = ""
+    pending_id = ""
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or re.match(r"^[-=]+$", s):
+            continue
+        if re.search(r"UserID|User[\s-]?name|Total|Domain|Access interface",
+                     s, re.I):
+            continue
+        toks = s.split()
+        mac = _MAC_RE.search(s)
+        ip = _IPV4_RE.search(s)
+        if not (mac and ip):
+            # Linha "enrolada": guarda userid e/ou username para a próxima.
+            if toks and toks[0].isdigit():
+                pending_id = toks[0]
+            cand = next((t for t in toks if "@" in t), "")
+            if not cand:
+                cand = next((t for t in toks
+                            if not t.isdigit() and re.match(r"^[\w@.\-]+$", t)),
+                            "")
+            if cand:
+                pending_user = cand
+            continue
+        ip_val = ip.group(0)
+        userid = toks[0] if toks and toks[0].isdigit() else pending_id
+        try:
+            ip_idx = toks.index(ip_val)
+        except ValueError:
+            ip_idx = -1
+        username = toks[ip_idx - 1] if ip_idx >= 1 else ""
+        if (not username or _MAC_RE.fullmatch(username)
+                or username in (ip_val, userid)):
+            username = pending_user or username
+        interface = toks[-1] if toks else ""
+        domain = username.split("@", 1)[1] if "@" in username else ""
+        rows.append({
+            "userid": userid,
+            "username": username,
+            "ip": ip_val,
+            "mac": mac.group(0),
+            "interface": expand_iface_name(interface),
+            "domain": domain,
+        })
+        pending_user = ""
+        pending_id = ""
+    return rows
+
+
+def parse_domains(text: str) -> list[dict]:
+    """``display domain`` -> [{name, state}] (domínios AAA / perfis BRAS)."""
+    rows = []
+    state_re = re.compile(r"^(\S+)\s+(Active|Block(?:ed)?|Inactive)\b", re.I)
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or re.match(r"^[-=]+$", s):
+            continue
+        if re.search(r"Domain[\s-]?name|Total|^\s*State\b", s, re.I):
+            continue
+        m = state_re.match(s)
+        if m:
+            rows.append({"name": m.group(1), "state": m.group(2)})
+    # Fallback: versões que listam só o nome do domínio, sem coluna de estado.
+    if not rows:
+        for line in text.splitlines():
+            s = line.strip()
+            m = re.match(r"^([A-Za-z][\w.\-]{1,63})$", s)
+            if m and not re.search(r"total|domain|state", s, re.I):
+                rows.append({"name": m.group(1), "state": ""})
+    return rows
+
+
+# ──────────────────────────────────────────────────────────────────────────── #
+# MQC — traffic classifier / behavior / policy (firewall avançado e CGNAT)
+# ──────────────────────────────────────────────────────────────────────────── #
+def parse_mqc_blocks(text: str, head: str) -> list[dict]:
+    """Extrai blocos de ``display traffic classifier|behavior|policy``.
+
+    ``head`` é ``Classifier``, ``Behavior`` ou ``Policy``. Cada bloco começa
+    em ``<head>: <nome>`` e as linhas indentadas seguintes viram o detalhe
+    (if-match, redirect, precedence...). Tolerante a variações de layout.
+    """
+    rows = []
+    cur = None
+    start = re.compile(rf"^\s*{head}\s*:\s*(\S+)", re.I)
+    for line in text.splitlines():
+        m = start.match(line)
+        if m:
+            cur = {"name": m.group(1), "_d": []}
+            rows.append(cur)
+            continue
+        if cur is not None:
+            s = line.strip()
+            if (s and not re.match(r"^[-=]+$", s)
+                    and not re.match(r"^(Total|User|Traffic)", s, re.I)):
+                cur["_d"].append(s)
+    for r in rows:
+        r["detail"] = " · ".join(r.pop("_d")[:5])
     return rows

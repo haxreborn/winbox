@@ -1340,3 +1340,208 @@ def ip_community_filter(filter_name: str, index: int,
     if remove:
         return [f"undo ip community-filter {filter_name} index {index}"]
     return [f"ip community-filter {filter_name} index {index} {action} {community}"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BRAS / PPPoE (NE8000) — domínios, interfaces de acesso, Virtual-Template,
+# pools de assinante e desconexão de usuários online.
+# ─────────────────────────────────────────────────────────────────────────────
+def bras_domain(name: str, auth_scheme: str = "", acct_scheme: str = "",
+                radius_group: str = "", ip_pool: str = "",
+                ipv6_pool: str = "", remove: bool = False) -> list[str]:
+    """Cria/edita um domínio AAA (o "profile" do assinante)."""
+    if remove:
+        return ["aaa", f"undo domain {name}", "quit"]
+    cmds = ["aaa", f"domain {name}"]
+    if auth_scheme.strip():
+        cmds.append(f"authentication-scheme {auth_scheme.strip()}")
+    if acct_scheme.strip():
+        cmds.append(f"accounting-scheme {acct_scheme.strip()}")
+    if radius_group.strip():
+        cmds.append(f"radius-server group {radius_group.strip()}")
+    if ip_pool.strip():
+        cmds.append(f"ip-pool {ip_pool.strip()}")
+    if ipv6_pool.strip():
+        cmds.append(f"ipv6-pool {ipv6_pool.strip()}")
+    cmds.extend(["quit", "quit"])
+    return cmds
+
+
+def bras_access_interface(interface: str, user_vlan: str, domain: str,
+                          remove: bool = False) -> list[str]:
+    """Habilita acesso PPPoE/IPoE (BAS layer2-subscriber) numa sub-interface."""
+    cmds = [f"interface {interface}"]
+    if remove:
+        cmds.extend(["undo bas", "quit"])
+        return cmds
+    if user_vlan.strip():
+        cmds.append(f"user-vlan {user_vlan.strip()}")
+    cmds.append("bas")
+    cmds.append("access-type layer2-subscriber "
+                f"default-domain authentication {domain}")
+    cmds.extend(["quit", "quit"])
+    return cmds
+
+
+def pppoe_server_template(template_id: int, ac_name: str = "",
+                          service_name: str = "", auth_mode: str = "pap",
+                          remove: bool = False) -> list[str]:
+    """Cria um Virtual-Template servidor PPPoE."""
+    if remove:
+        return [f"undo interface Virtual-Template{template_id}"]
+    cmds = [f"interface Virtual-Template{template_id}",
+            f"ppp authentication-mode {auth_mode}"]
+    if ac_name.strip():
+        cmds.append(f"pppoe-server ac-name {ac_name.strip()}")
+    if service_name.strip():
+        cmds.append(f"pppoe-server service-name-parameter {service_name.strip()}")
+    cmds.append("quit")
+    return cmds
+
+
+def bras_ip_pool(name: str, gateway: str, mask: str, start: str, end: str,
+                 dns: str = "", remove: bool = False) -> list[str]:
+    """Pool de endereços de assinante (``ip pool <name> bas local``)."""
+    if remove:
+        return [f"undo ip pool {name}"]
+    cmds = [f"ip pool {name} bas local",
+            f"gateway {gateway} {mask}",
+            f"section 0 {start} {end}"]
+    if dns.strip():
+        cmds.append(f"dns-server {dns.strip()}")
+    cmds.append("quit")
+    return cmds
+
+
+def cut_access_user(by: str, value: str) -> list[str]:
+    """Desconecta assinante(s) online. by: 'username'|'domain'|'interface'."""
+    return [f"cut access-user {by} {value}"]
+
+
+def local_ppp_user(username: str, password: str,
+                   remove: bool = False) -> list[str]:
+    """Conta PPPoE local (equivalente ao 'Secrets' do WinBox)."""
+    if remove:
+        return ["aaa", f"undo local-user {username}", "quit"]
+    return [
+        "aaa",
+        f"local-user {username} password irreversible-cipher {password}",
+        f"local-user {username} service-type ppp",
+        "quit",
+    ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Firewall avançado / MQC (traffic classifier-behavior-policy) e CGNAT
+# ─────────────────────────────────────────────────────────────────────────────
+def fw_classifier(name: str, operator: str = "or", acl: int = 0,
+                  dscp: str = "", remove: bool = False) -> list[str]:
+    """Classificador MQC: casa um ACL e/ou DSCP."""
+    if remove:
+        return [f"undo traffic classifier {name}"]
+    cmds = [f"traffic classifier {name} operator {operator}"]
+    if acl:
+        cmds.append(f"if-match acl {acl}")
+    if dscp.strip():
+        cmds.append(f"if-match dscp {dscp.strip()}")
+    cmds.append("quit")
+    return cmds
+
+
+def fw_behavior(name: str, kind: str = "permit", nexthop: str = "",
+                interface: str = "", car_kbps: int = 0, dscp: str = "",
+                remove: bool = False) -> list[str]:
+    """Comportamento MQC.
+
+    kind: ``permit`` | ``deny`` | ``redirect-nexthop`` (CGNAT) |
+    ``redirect-interface`` | ``remark`` | ``car``.
+    """
+    if remove:
+        return [f"undo traffic behavior {name}"]
+    cmds = [f"traffic behavior {name}"]
+    if kind == "permit":
+        cmds.append("permit")
+    elif kind == "deny":
+        cmds.append("deny")
+    elif kind == "redirect-nexthop" and nexthop.strip():
+        cmds.append(f"redirect ip-nexthop {nexthop.strip()}")
+    elif kind == "redirect-interface" and interface.strip():
+        cmds.append(f"redirect interface {interface.strip()}")
+    elif kind == "remark" and dscp.strip():
+        cmds.append(f"remark dscp {dscp.strip()}")
+    if car_kbps:
+        cmds.append(f"car cir {car_kbps}")
+    cmds.append("quit")
+    return cmds
+
+
+def fw_policy_bind(policy: str, classifier: str, behavior: str,
+                   precedence: int = 0, share_mode: bool = False,
+                   remove: bool = False) -> list[str]:
+    """Associa classificador→comportamento dentro de uma traffic policy."""
+    cmds = [f"traffic policy {policy}"]
+    if share_mode:
+        cmds.append("share-mode")
+    if remove:
+        cmds.append(f"undo classifier {classifier}")
+    else:
+        c = f"classifier {classifier} behavior {behavior}"
+        if precedence:
+            c += f" precedence {precedence}"
+        cmds.append(c)
+    cmds.append("quit")
+    return cmds
+
+
+def fw_policy_delete(policy: str) -> list[str]:
+    return [f"undo traffic policy {policy}"]
+
+
+def fw_policy_apply(interface: str, policy: str, direction: str,
+                    remove: bool = False) -> list[str]:
+    """Aplica/retira a traffic policy numa interface."""
+    cmds = [f"interface {interface}"]
+    if remove:
+        cmds.append(f"undo traffic-policy {direction}")
+    else:
+        cmds.append(f"traffic-policy {policy} {direction}")
+    cmds.append("quit")
+    return cmds
+
+
+def fw_policy_apply_global(policy: str, direction: str = "inbound",
+                           remove: bool = False) -> list[str]:
+    """Aplica/retira a traffic policy globalmente (CGNAT: global-acl)."""
+    if remove:
+        return [f"undo traffic-policy {policy} {direction} global-acl"]
+    return [f"traffic-policy {policy} {direction} global-acl"]
+
+
+def fw_cgnat_chain(acl_number: int, source: str, wildcard: str,
+                   classifier: str, behavior: str, policy: str,
+                   nexthop: str, precedence: int = 15,
+                   apply_global: bool = True,
+                   direction: str = "inbound") -> list[str]:
+    """Monta toda a cadeia de CGNAT por redirecionamento (estilo A10):
+
+    ACL com a origem CGNAT → classificador → comportamento ``redirect
+    ip-nexthop`` → política → (opcional) aplicação global.
+    """
+    cmds = [
+        f"acl number {acl_number}",
+        f"description CGNAT-{classifier}",
+        f"rule 5 permit ip source {source} {wildcard}",
+        "quit",
+        f"traffic classifier {classifier} operator or",
+        f"if-match acl {acl_number}",
+        "quit",
+        f"traffic behavior {behavior}",
+        f"redirect ip-nexthop {nexthop}",
+        "quit",
+        f"traffic policy {policy}",
+        f"classifier {classifier} behavior {behavior} precedence {precedence}",
+        "quit",
+    ]
+    if apply_global:
+        cmds.append(f"traffic-policy {policy} {direction} global-acl")
+    return cmds

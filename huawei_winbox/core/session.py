@@ -17,11 +17,34 @@ import paramiko
 _PROMPT_RE = re.compile(r"[<\[]\S[^<>\[\]\r\n]{0,79}[>\]]\s*$")
 # Paginação ("---- More ----") caso screen-length não tenha sido aplicado.
 _MORE_RE = re.compile(r"-+\s*[Mm]ore\s*-+")
-# Pergunta de confirmação do VRP ("Continue? [Y/N]:") — respondida com "y"
+# Pergunta de confirmação do VRP ("Continue? [Y/N]:") — respondida
 # automaticamente; sem isso, comandos como "peer X ignore" ou "save"
 # ficariam parados até estourar o timeout.
 _CONFIRM_RE = re.compile(r"\[\s*Y\s*/\s*N\s*\]\s*:?\s*$|\(y/n\)\s*:?\s*$",
                          re.IGNORECASE)
+# Exceção: o aviso de troca de senha que aparece logo após o login
+# ("Warning: The initial password poses security risks. ... Change now?
+# [Y/N]:"). Se new_password estiver definido, respondemos "Y" e fazemos a
+# troca; caso contrário respondemos "N" (adiar) — mas alguns equipamentos
+# não aceitam "N" e derrubam a sessão.
+_DECLINE_RE = re.compile(
+    r"change\s+now"
+    r"|initial password"
+    r"|poses security"
+    r"|password.{0,40}(?:expir|chang)"
+    r"|(?:expir|chang).{0,40}password"
+    r"|senha.{0,40}(?:expir|alter|troc|modific)"
+    r"|(?:alter|troc|modific).{0,40}senha",
+    re.IGNORECASE | re.DOTALL)
+# Prompts de entrada de senha durante a troca forçada no login.
+_PWD_OLD_RE = re.compile(
+    r"(?:old|current|original|exist[ei]ng)\s+password\s*:?\s*$"
+    r"|senha\s+(?:antiga|atual|corrente)\s*:?\s*$",
+    re.IGNORECASE)
+_PWD_NEW_RE = re.compile(
+    r"(?:new|confirm|re.?enter|repeat)\s+password\s*:?\s*$"
+    r"|(?:nova|confirm[ae]|repita?)\s*(?:r?\s+a?\s*senha)?\s*:?\s*$",
+    re.IGNORECASE)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\r|\x1b\[16D\s*\x1b\[16D")
 # Extrai o nome do equipamento do prompt detectado (captura o colchete
 # para distinguir visão de usuário <name> de visão de sistema [name-...]).
@@ -29,6 +52,27 @@ _HOSTNAME_RE = re.compile(r"([<\[])([^<>\[\]\r\n]+)[>\]]")
 
 # Comandos que podem demorar bem mais que o timeout padrão.
 _LONG_TIMEOUT = 90.0   # ping, traceroute, logbuffer extenso
+
+# Mensagem quando o equipamento derruba a conexão durante o login (RST/EOF
+# — no Windows aparece como "10054 - conexão cancelada pelo host remoto").
+# Pode ocorrer quando o equipamento força a troca da senha no primeiro
+# acesso e não aceita adiá-la com "N".
+_CLOSED_MSG = (
+    "A conexão foi encerrada pelo equipamento durante o login.\n\n"
+    "Em alguns equipamentos isso acontece quando a troca da senha no "
+    "primeiro acesso é obrigatória e não pode ser adiada. Tente conectar "
+    "novamente; se persistir, conclua a troca de senha pelo console do "
+    "equipamento e tente de novo.")
+
+
+def confirm_answer(window: str) -> str:
+    """Decide a resposta de uma confirmação ``[Y/N]`` do VRP.
+
+    Recebe o trecho de texto que acompanha o prompt (as últimas linhas
+    recebidas). Retorna ``"N"`` para o aviso de troca de senha do login e
+    ``"Y"`` para qualquer outra confirmação (save, peer ignore, etc.).
+    """
+    return "N" if _DECLINE_RE.search(window) else "Y"
 
 
 class SSHError(Exception):
@@ -53,6 +97,25 @@ class HuaweiSession:
         # [~name] (sincronizado) ou [*name] (alterações pendentes). Quando
         # detectado, configure() envia "commit" antes de sair.
         self.two_stage = False
+        # Se definido antes de connect(), o app responde "Y" ao aviso de
+        # troca de senha obrigatória, envia a senha atual como senha antiga e
+        # esta como nova senha. Após a troca bem-sucedida, self.password é
+        # atualizado e new_password é zerado.
+        self.new_password: str = ""
+        # Sinaliza à UI que o equipamento EXIGE a troca de senha (recusar com
+        # "N" derrubou/travou a sessão). A tela de conexão usa isto para abrir
+        # o modal de nova senha e reconectar.
+        self.password_change_required = False
+        # Interno: True entre responder "N" ao aviso e o próximo prompt/erro.
+        self._declined_change = False
+        # True se o equipamento aceita "commit trial <segundos>" (detectado
+        # na conexão). Apenas dispositivos two_stage podem suportar isso.
+        self.supports_safe_mode = False
+        # Controlado pelo botão Safe Mode da MainWindow. Quando True e o
+        # equipamento suporta, configure() usa "commit trial 600" em vez de
+        # "commit" — a configuração candidata fica pendente por 10 min e
+        # é revertida automaticamente se não for confirmada.
+        self.safe_mode = False
 
     # ------------------------------------------------------------------ #
     def connect(self) -> None:
@@ -78,8 +141,13 @@ class HuaweiSession:
         shell.settimeout(0.5)          # timeout de recv individual (não total)
         self._client = client
         self._shell = shell
-        # Lê banner/prompt inicial — hostname é extraído aqui.
+        # Lê banner/prompt inicial — hostname é extraído aqui. Se new_password
+        # estiver definido, o loop interno trata a troca forçada de senha.
         self._read_until_prompt()
+        # Troca concluída sem exceção: atualiza a senha ativa.
+        if self.new_password:
+            self.password = self.new_password
+            self.new_password = ""
         # Desativa paginação nesta sessão.
         self.run("screen-length 0 temporary")
         # Detecta configuração em dois estágios (NE/ATN): entra e sai da
@@ -90,6 +158,23 @@ class HuaweiSession:
             self.run("return")
         except SSHError:
             pass
+
+        # Detecta suporte a "commit trial": só faz sentido em dispositivos
+        # two_stage. Tenta "commit trial 1" dentro da visão de sistema;
+        # se o VRP não retornar "Error", o recurso existe. O trial é
+        # imediatamente encerrado com "commit" antes de sair.
+        if self.two_stage:
+            try:
+                self.run("system-view")
+                probe = self.run("commit trial 60")
+                if "Error" not in probe and "nknown command" not in probe:
+                    self.supports_safe_mode = True
+                    # Encerra o trial imediatamente (sem alterações pendentes
+                    # isso é um no-op, mas garante estado limpo).
+                    self.run("commit", timeout=30.0)
+                self.run("return")
+            except SSHError:
+                pass
 
     @property
     def connected(self) -> bool:
@@ -179,7 +264,11 @@ class HuaweiSession:
         """
         output = self.run_many(["system-view", *commands])
         if self.two_stage:
-            output += f"\n> commit\n{self.run('commit', timeout=60.0)}"
+            if self.safe_mode and self.supports_safe_mode:
+                commit_cmd = "commit trial 600"
+            else:
+                commit_cmd = "commit"
+            output += f"\n> {commit_cmd}\n{self.run(commit_cmd, timeout=60.0)}"
         output += f"\n> return\n{self.run('return')}"
         return output
 
@@ -203,9 +292,20 @@ class HuaweiSession:
                 chunk = self._shell.recv(65535)
             except socket.timeout:
                 chunk = b""
+            except (OSError, EOFError) as exc:
+                # Reset/aborto da conexão (ex.: WSAECONNRESET 10054 no
+                # Windows). Sem isto, viraria um traceback cru de socket.
+                if self._declined_change:
+                    self.password_change_required = True
+                raise SSHError(_CLOSED_MSG) from exc
             if chunk:
                 parts.append(chunk.decode("utf-8", errors="replace"))
                 deadline = time.time() + t   # recebeu dados → reseta prazo
+            elif self._shell.closed or self._shell.eof_received:
+                # recv vazio sem timeout ⇒ canal fechado pelo equipamento.
+                if self._declined_change:
+                    self.password_change_required = True
+                raise SSHError(_CLOSED_MSG)
 
             # Só o final interessa para detectar prompt/More/confirmação.
             tail_src = "".join(parts[-4:])[-4096:]
@@ -214,13 +314,44 @@ class HuaweiSession:
             last = lines[-1]
 
             if _MORE_RE.search(last):
-                self._shell.send(" ")
+                self._shell.send(" ")   # space avança a página
+                deadline = time.time() + t
                 time.sleep(0.05)
                 continue
 
             if chunk and _CONFIRM_RE.search(last):
-                self._shell.send("y\n")
-                time.sleep(0.05)
+                # A pergunta pode ocupar mais de uma linha (o "[Y/N]" vem
+                # no fim); olha as últimas linhas para decidir Y x N.
+                window = "\n".join(lines[-8:])
+                if _DECLINE_RE.search(window):
+                    # Aviso de troca de senha: Y se já temos nova senha; senão
+                    # tenta "N" (adiar). Marca _declined_change para, se a
+                    # sessão cair/travar em seguida, avisar a UI que a troca
+                    # é obrigatória (abre o modal de nova senha).
+                    if self.new_password:
+                        answer = "Y"
+                    else:
+                        answer = "N"
+                        self._declined_change = True
+                else:
+                    answer = "Y"
+                # [Y/N] usa modo raw no VRP — apenas \r funciona como Enter.
+                self._shell.send(answer + "\r")
+                deadline = time.time() + t
+                time.sleep(0.1)
+                continue
+
+            # Prompts de entrada de senha durante a troca forçada no login.
+            if chunk and _PWD_OLD_RE.search(last):
+                self._shell.send(self.password + "\r")
+                deadline = time.time() + t
+                time.sleep(0.1)
+                continue
+
+            if chunk and self.new_password and _PWD_NEW_RE.search(last):
+                self._shell.send(self.new_password + "\r")
+                deadline = time.time() + t
+                time.sleep(0.1)
                 continue
 
             if _PROMPT_RE.search(tail):
@@ -244,10 +375,16 @@ class HuaweiSession:
                         # Visão de sistema antes de conhecermos o sysname:
                         # usa o nome inteiro até aparecer um prompt <name>.
                         self.hostname = raw_name
+                # Chegou ao prompt: a recusa (se houve) foi aceita.
+                self._declined_change = False
                 return "".join(parts)
 
             time.sleep(0.02)
 
+        # Timeout: se acabamos de recusar a troca de senha, o equipamento
+        # provavelmente a exige — avisa a UI para abrir o modal de nova senha.
+        if self._declined_change:
+            self.password_change_required = True
         tail = _ANSI_RE.sub("", "".join(parts)[-1000:]).strip()
         extra = (f"\n\nÚltima resposta parcial do equipamento:\n"
                  f"{tail[-400:]}" if tail else

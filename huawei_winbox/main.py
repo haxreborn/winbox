@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication
 
 from .ui.login import LoginWindow
 from .ui.mainwindow import MainWindow
-from .ui.style import WINBOX_QSS
+from .ui.style import build_winbox_qss
 
 
 def _light_palette() -> QPalette:
@@ -42,7 +42,7 @@ def main() -> int:
     # integralmente a paleta e o QSS definidos aqui.
     app.setStyle("Fusion")
     app.setPalette(_light_palette())
-    app.setStyleSheet(WINBOX_QSS)
+    app.setStyleSheet(build_winbox_qss())
 
     windows: list[MainWindow] = []  # mantém referências vivas
     login = LoginWindow()
