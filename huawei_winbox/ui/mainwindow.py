@@ -455,6 +455,30 @@ class MainWindow(QMainWindow):
     # ================================================================== #
     # Painéis (janelas internas)
     # ================================================================== #
+    def open_named_panel(self, label: str, payload=None) -> None:
+        """Abre um módulo pelo nome e, se ele aceitar, entrega um alvo.
+
+        É o que liga os painéis entre si — "Ver no gráfico" na tabela de
+        Interfaces abre o Tráfego já com aquelas portas marcadas, em vez de
+        obrigar a procurá-las de novo na lista.
+        """
+        items = self.menu.findItems(label, Qt.MatchExactly)
+        if not items:
+            return
+        self.menu.setCurrentItem(items[0])
+        self._open_panel(items[0])
+        window = self._windows.get(label)
+        if window is None or not shiboken6.isValid(window):
+            return
+        # Traz para a frente explicitamente: a janela pode já estar aberta
+        # atrás de outra, e quem pediu espera vê-la.
+        window.show()
+        window.raise_()
+        self.mdi.setActiveSubWindow(window)
+        panel = window.widget()
+        if payload is not None and hasattr(panel, "focus_payload"):
+            panel.focus_payload(payload)
+
     def _open_panel(self, item):
         label = item.text()
         existing = self._windows.get(label)
@@ -467,6 +491,10 @@ class MainWindow(QMainWindow):
 
         panel_cls = dict(_MENU)[label]
         panel = panel_cls(self.session)
+        # Painéis que sabem pedir a abertura de outro módulo (opcional).
+        request = getattr(panel, "open_panel_requested", None)
+        if request is not None:
+            request.connect(self.open_named_panel)
         sub = QMdiSubWindow()
         sub.setWidget(panel)
         sub.setWindowTitle(label)

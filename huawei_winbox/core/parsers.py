@@ -928,22 +928,55 @@ def parse_ipv6_routing(text: str) -> list[dict]:
 # ──────────────────────────────────────────────────────────────────────────── #
 # MAC Address Table
 # ──────────────────────────────────────────────────────────────────────────── #
+# Tipos de entrada aceitos por "display mac-address" nas várias versões.
+_MAC_ENTRY_TYPES = {
+    "dynamic", "static", "blackhole", "security", "sticky", "authen",
+    "mux", "snooping", "evn", "learned", "config", "sec-config", "pre-mac",
+}
+
+
 def parse_mac_table(text: str) -> list[dict]:
-    """``display mac-address-table`` -> [{mac, vlan, type, interface}]"""
+    """``display mac-address`` -> [{mac, vlan, type, interface}]
+
+    O layout muda bastante entre plataformas — a coluna de VLAN aparece
+    como ``100``, ``100/-``, ``100/-/-`` ou ``-/-/vsi1`` conforme a versão,
+    e a ordem de "Learned-From" e "Type" também varia::
+
+        MAC Address    VLAN/VSI/SI   Learned-From   Type
+        5489-9885-1234 100/-/-       GE0/0/2        dynamic
+
+    Em vez de depender de colunas fixas, cada token é classificado pelo
+    que ele é: o tipo vem de uma lista conhecida, a interface casa com o
+    padrão de nome de porta e a VLAN é o campo numérico restante.
+    """
     rows = []
-    pattern = re.compile(
-        r"^([0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4})\s+"
-        r"(\d+)\s+(\w+)\s+\S+\s+(\S+)"
-    )
+    mac_re = re.compile(r"^([0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4})\b")
+    vlan_re = re.compile(r"^(\d{1,4}|-)(?:[/-]\S*)?$")
+    iface_re = re.compile(rf"^{_IFACE_NAME}$")
     for line in text.splitlines():
-        m = pattern.match(line.strip())
-        if not m:
+        stripped = line.strip()
+        match = mac_re.match(stripped)
+        if not match:
             continue
+        tokens = stripped.split()
+        mac, vlan, interface, entry_type = tokens[0], "", "", ""
+        for token in tokens[1:]:
+            lowered = token.lower()
+            if not entry_type and lowered in _MAC_ENTRY_TYPES:
+                entry_type = lowered
+                continue
+            if not interface and iface_re.match(token):
+                interface = expand_iface_name(token)
+                continue
+            if not vlan:
+                vlan_match = vlan_re.match(token)
+                if vlan_match and vlan_match.group(1) != "-":
+                    vlan = vlan_match.group(1)
         rows.append({
-            "mac": m.group(1),
-            "vlan": m.group(2),
-            "type": m.group(3),
-            "interface": expand_iface_name(m.group(4)),
+            "mac": mac,
+            "vlan": vlan,
+            "type": entry_type,
+            "interface": interface,
         })
     return rows
 

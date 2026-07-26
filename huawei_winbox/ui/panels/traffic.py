@@ -417,6 +417,22 @@ class TrafficPanel(QWidget):
     def _select_none(self) -> None:
         self._set_checked([])
 
+    def focus_payload(self, names) -> None:
+        """Marca as interfaces pedidas por outro painel ("Ver no gráfico")."""
+        wanted = [names] if isinstance(names, str) else list(names)
+        if not wanted:
+            return
+        # A porta pode ainda não estar na tabela (o coletor acabou de subir):
+        # garante a linha antes de marcar.
+        known = self.engine.interface_names() or self.history.interfaces()
+        self._sync_table(sorted(set(known) | set(wanted)))
+        self._set_checked(wanted)
+        self.filter_edit.clear()
+        row = self._rows.get(wanted[0])
+        if row is not None:
+            self.table.selectRow(row)
+            self.table.scrollToItem(self.table.item(row, 0))
+
     def _apply_filter(self) -> None:
         text = self.filter_edit.text().strip().lower()
         only_active = self.only_active_chk.isChecked()

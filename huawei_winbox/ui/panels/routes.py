@@ -53,12 +53,14 @@ class RoutesPanel(BasePanel):
         del_btn.clicked.connect(self._remove_static)
         layout.addWidget(del_btn)
 
-    def refresh(self):
+    def refresh(self, *args, **kwargs):
         # Captura o estado dos widgets AQUI (thread da UI) — fetch roda
-        # no worker e não pode tocar em widgets Qt.
+        # no worker e não pode tocar em widgets Qt. Os argumentos seguem
+        # intactos: é por eles que a BasePanel sabe se é clique ou
+        # atualização automática.
         self._mode = self.proto_combo.currentText()
         self._query = self.search_edit.text().strip()
-        super().refresh()
+        super().refresh(*args, **kwargs)
 
     def fetch(self):
         self._truncated = False

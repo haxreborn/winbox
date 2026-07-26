@@ -7,13 +7,13 @@ porta (velocidade, duplex, negociação, potência ótica, contadores).
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QPushButton, QMessageBox, QDialog, QVBoxLayout, QGridLayout,
     QLabel, QDialogButtonBox, QGroupBox, QScrollArea, QWidget,
 )
 
-from ...core import parsers, translator
+from ...core import parsers, telemetry, translator
 from ..forms import SimpleForm
 from ..worker import run_async
 from .base import BasePanel
@@ -123,10 +123,24 @@ class InterfacesPanel(BasePanel):
     title = "Interfaces"
     columns = ["Interface", "Físico", "Protocolo", "RX", "TX", "Descrição"]
 
+    # Pedido de abrir outro módulo (a MainWindow conecta se existir).
+    open_panel_requested = Signal(str, object)
+
     def __init__(self, session, parent=None):
+        # O coletor precisa existir ANTES do super().__init__(), que já
+        # dispara o primeiro fetch().
+        self.engine = telemetry.for_session(session)
+        self._rates_generation = -1
         super().__init__(session, parent)
         # Conecta uma única vez — não em _on_rows, que roda a cada refresh.
         self.table.itemDoubleClicked.connect(self._show_detail_from_item)
+        self.engine.acquire_traffic("interfaces-panel")
+        self.engine.start()
+        # As colunas RX/TX passam a andar sozinhas, lendo o retrato em
+        # memória: banda ao vivo sem custar uma consulta sequer.
+        self._rate_timer = QTimer(self)
+        self._rate_timer.timeout.connect(self._update_rates)
+        self._rate_timer.start(1000)
 
     def build_toolbar(self, layout):
         for text, slot in [
@@ -141,36 +155,77 @@ class InterfacesPanel(BasePanel):
             ("Eth-Trunk...", self._eth_trunk),
             ("Sub-interface...", self._subinterface),
             ("Detalhes", self._show_detail),
+            ("Ver no gráfico", self._show_in_graph),
         ]:
             btn = QPushButton(text)
             btn.clicked.connect(slot)
             layout.addWidget(btn)
 
+    def _show_in_graph(self):
+        """Abre o Tráfego já com as portas selecionadas marcadas."""
+        names = sorted({item.text() for item in self.table.selectedItems()
+                        if item.column() == 0})
+        if not names:
+            QMessageBox.information(
+                self, self.title,
+                "Selecione uma ou mais interfaces na tabela.")
+            return
+        self.open_panel_requested.emit("Tráfego (gráfico)", names)
+
     def fetch(self):
         rows = parsers.parse_interface_description(
             self.session.run("display interface description"))
-        # RX/TX: banda real (bits/sec convertidos para Mbps/Gbps) lida do
-        # dump completo "display interface" — um único comando para todas
-        # as portas. Se falhar, cai para o percentual do "brief".
-        util: dict = {}
-        try:
-            util = parsers.parse_interface_rates(
-                self.session.run("display interface", timeout=60.0))
-        except Exception:
-            pass
-        if not util:
+        # RX/TX vêm do coletor, que já amostra todas as portas — antes esta
+        # tabela baixava o dump completo do "display interface" (dezenas de
+        # segundos numa placa cheia) a cada atualização, e era o comando
+        # mais caro do aplicativo. Só se o coletor ainda não tiver dados é
+        # que se busca algo, e aí o "brief", que é barato.
+        rates = self.engine.snapshot()["rates"]
+        if not rates:
             try:
                 brief = parsers.parse_interface_brief(
-                    self.session.run("display interface brief"))
-                util = {b["name"]: (b["in_util"], b["out_util"])
-                        for b in brief}
-            except Exception:
+                    self.session.run("display interface brief", timeout=30.0))
+                for row in brief:
+                    row_name = row["name"]
+                    rows_by_name = {r["name"]: r for r in rows}
+                    if row_name in rows_by_name:
+                        rows_by_name[row_name]["rx"] = row["in_util"]
+                        rows_by_name[row_name]["tx"] = row["out_util"]
+            except Exception:                # noqa: BLE001 — coluna opcional
                 pass
+            for r in rows:
+                r.setdefault("rx", "")
+                r.setdefault("tx", "")
+            return rows
         for r in rows:
-            rx, tx = util.get(r["name"], ("", ""))
-            r["rx"] = rx
-            r["tx"] = tx
+            pair = rates.get(r["name"])
+            r["rx"] = parsers.format_bps(pair[0]) if pair else ""
+            r["tx"] = parsers.format_bps(pair[1]) if pair else ""
         return rows
+
+    # ------------------------------------------------------------------ #
+    def _update_rates(self) -> None:
+        """Atualiza só as colunas RX/TX a partir do coletor (sem I/O)."""
+        if not self.isVisible() or self._busy:
+            return
+        snapshot = self.engine.snapshot()
+        if snapshot["generation"] == self._rates_generation:
+            return
+        self._rates_generation = snapshot["generation"]
+        rates = snapshot["rates"]
+        if not rates:
+            return
+        for row in range(self.table.rowCount()):
+            name_item = self.table.item(row, 0)
+            if name_item is None:
+                continue
+            pair = rates.get(name_item.text())
+            if pair is None:
+                continue
+            for column, value in ((3, pair[0]), (4, pair[1])):
+                item = self.table.item(row, column)
+                if item is not None:
+                    item.setText(parsers.format_bps(value))
 
     def row_values(self, row):
         return [row["name"], row["phy"], row["protocol"],
@@ -354,3 +409,9 @@ class InterfacesPanel(BasePanel):
             dlg.exec()
 
         run_async(fetch, done, self._on_error)
+
+    # ------------------------------------------------------------------ #
+    def closeEvent(self, event):
+        self._rate_timer.stop()
+        self.engine.release_traffic("interfaces-panel")
+        super().closeEvent(event)
