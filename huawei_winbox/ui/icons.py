@@ -255,6 +255,7 @@ _DRAW = {
 # Cada item do menu lateral -> (desenho, cor)
 _MENU_ICON = {
     "Painel": ("grid", BLUE),
+    "Verificação": ("shield", GREEN),
     "Localizar": ("find", INDIGO),
     "Interfaces": ("ethernet", BLUE),
     "Tráfego (gráfico)": ("chart", GREEN),

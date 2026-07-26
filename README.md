@@ -26,6 +26,7 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
 
   | Módulo | O que faz |
   |---|---|
+  | Verificação | **este equipamento está bem?** — treze conferências (config não salva, alarmes, óptica, erros crescendo, BGP/OSPF, CPU/memória/temperatura, NTP, Telnet/SNMP padrão, reboot recente) com veredito, o que foi observado e o que fazer |
   | Localizar | **em que porta está este cliente?** — informe o IP, o MAC (em qualquer notação) ou parte da descrição e o app encadeia ARP → tabela MAC → sessão PPPoE → rota, mostrando a porta e os comandos usados |
   | Painel | visão geral ao vivo: CPU, memória, temperatura, banda total, ranking das portas mais carregadas, estado de BGP/OSPF/interfaces e identificação do equipamento — tudo numa janela só; também gera o **relatório HTML** do equipamento |
   | Interfaces | lista com RX/TX ao vivo (vindos do coletor, sem consulta extra), habilitar/desabilitar, descrição, IP, MTU e **Ver no gráfico**; duplo clique abre os detalhes da porta com o gráfico dela embutido |
@@ -121,6 +122,26 @@ lendo `sysName`, `sysUpTime`, `sysDescr` e a contagem de interfaces.
 O cliente SNMP v2c é implementado internamente (codificação BER própria),
 então **não há dependências novas** — o projeto continua usando apenas
 PySide6 e paramiko.
+
+## Verificação: este equipamento está bem?
+
+O aplicativo já sabia ler alarmes, óptica, erros de porta, BGP, OSPF e a
+diferença entre a configuração em execução e a salva. O módulo
+**Verificação** junta tudo numa resposta única — a que se quer ao assumir
+um plantão ou ao terminar uma manutenção.
+
+São treze conferências, ordenadas da mais grave para a menos, cada uma com
+o que foi observado e **o que fazer** a respeito; duplo clique abre o
+painel onde o assunto se resolve, e *Copiar resultado* gera um texto
+pronto para a passagem de turno.
+
+Duas decisões importam aqui. Primeiro, **`n/d` é um veredito de primeira
+classe**: se o equipamento não expõe o dado, o painel diz que não sabe em
+vez de dizer que está tudo bem. Segundo, os limiares são **conservadores
+de propósito** — placa de rede trabalha entre 40 e 65 °C e o alarme do
+próprio equipamento fica em 80–90 °C, então marcar falha em 75 encheria a
+lista de alarme falso, que é o jeito mais rápido de fazer alguém parar de
+olhar a verificação.
 
 ## Relatório do equipamento em um clique
 
@@ -240,6 +261,7 @@ huawei_winbox/
 │   ├── backup.py            # histórico de configurações em disco
 │   ├── locate.py            # busca encadeada IP → MAC → porta
 │   ├── report.py            # relatório HTML autocontido
+│   ├── healthcheck.py       # conferências de saúde do equipamento
 │   └── profiles.py          # equipamentos salvos (~/.huaweibox)
 └── ui/
     ├── login.py             # tela de conexão estilo WinBox
