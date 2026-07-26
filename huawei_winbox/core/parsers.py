@@ -16,6 +16,12 @@ import re
 # nomes completos quanto as abreviações que cada comando/modelo usa.
 _IFACE_NAME = r"(?:\d{1,3})?[A-Za-z][A-Za-z0-9\-]*\d[\d/.:]*"
 
+# Nome de interface citado no meio de uma frase (mensagem de log, alarme).
+# Exige a barra da numeração de porta para não casar com qualquer palavra
+# seguida de número ("VLAN 100", "slot 1").
+INTERFACE_IN_TEXT = re.compile(
+    r"\b(?:\d{1,3})?[A-Za-z][A-Za-z0-9\-]*\d+(?:/\d+)+(?:\.\d+)?\b")
+
 
 def parse_interface_brief(text: str) -> list[dict]:
     """``display interface brief`` ->
@@ -170,6 +176,30 @@ def parse_interface_bandwidth_bps(text: str) -> dict[str, int]:
                 speeds[current] = value
             break
     return speeds
+
+
+def parse_interface_states(text: str) -> dict[str, tuple[str, str]]:
+    """``display interface`` (todas) -> {nome: (estado_físico, protocolo)}.
+
+    O dump completo já diz o estado de cada porta nas linhas
+    ``X current state : UP`` e ``Line protocol current state : UP``;
+    aproveitá-lo evita uma consulta extra só para saber quem está no ar.
+    """
+    states: dict[str, tuple[str, str]] = {}
+    current = ""
+    state_re = re.compile(rf"^({_IFACE_NAME}) current state\s*:\s*(.+)$", re.I)
+    proto_re = re.compile(r"^Line protocol current state\s*:\s*(.+)$", re.I)
+    for line in text.splitlines():
+        stripped = line.strip()
+        match = state_re.match(stripped)
+        if match:
+            current = expand_iface_name(match.group(1))
+            states[current] = (match.group(2).strip(), "")
+            continue
+        match = proto_re.match(stripped)
+        if match and current:
+            states[current] = (states[current][0], match.group(1).strip())
+    return states
 
 
 def parse_interface_utilization(text: str) -> dict[str, tuple[float, float]]:
@@ -984,6 +1014,124 @@ def parse_mac_table(text: str) -> list[dict]:
             "type": entry_type,
             "interface": interface,
         })
+    return rows
+
+
+# ──────────────────────────────────────────────────────────────────────────── #
+# Alarmes ativos
+# ──────────────────────────────────────────────────────────────────────────── #
+# Severidade dos alarmes do VRP, do mais grave para o menos.
+ALARM_LEVELS = {
+    "critical": 1, "crítico": 1, "major": 2, "minor": 3,
+    "warning": 4, "aviso": 4, "indeterminate": 5, "event": 6,
+}
+ALARM_LABELS = {
+    1: "crítico", 2: "maior", 3: "menor", 4: "aviso",
+    5: "indeterminado", 6: "evento",
+}
+
+_ALARM_LEVEL_RE = re.compile(
+    r"\b(Critical|Major|Minor|Warning|Indeterminate|Event)\b", re.IGNORECASE)
+_ALARM_DATE_RE = re.compile(
+    r"(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}"
+    r"|[A-Z][a-z]{2}\s+\d{1,2}\s+\d{4}\s+\d{2}:\d{2}:\d{2})")
+_ALARM_ID_RE = re.compile(r"\b(0x[0-9a-fA-F]{4,}|\d{6,})\b")
+
+
+# Campo "Chave: valor" do formato em bloco. A chave é só letras e espaços,
+# o que impede uma linha de tabela ("1  0x0852 Critical 2025-09-12 14:02:11")
+# de ser confundida com um campo por causa dos dois-pontos da hora.
+_ALARM_KV_RE = re.compile(r"^([A-Za-z][A-Za-z ]{2,30})\s*:\s*(.*)$")
+# Número de sequência no início da linha da tabela — é índice de exibição,
+# não faz parte da descrição do alarme.
+_ALARM_SEQ_RE = re.compile(r"^\d{1,6}\s+")
+
+
+def _alarm_entry(level_word: str, alarm_id: str, stamp: str,
+                 description: str, raw: str) -> dict:
+    level = ALARM_LEVELS.get(level_word.lower(), 5)
+    return {
+        "level": level,
+        "severity": ALARM_LABELS.get(level, level_word.lower()),
+        "id": alarm_id,
+        "stamp": stamp,
+        "description": re.sub(r"\s{2,}", " ", description).strip(" \t:;,-"),
+        "raw": raw,
+    }
+
+
+def parse_active_alarms(text: str) -> list[dict]:
+    """``display alarm active`` -> [{level, severity, id, stamp, description}]
+
+    Este comando aparece em duas formas conforme a plataforma: uma tabela
+    (``Sequence AlarmId Level Date Time Description``) e um bloco de
+    ``Chave: valor`` por alarme. As duas são tratadas.
+
+    Na tabela, cada linha é lida pelos elementos que contém — severidade,
+    data e identificador — e o que sobra vira a descrição; as linhas de
+    continuação (descrição longa quebrada em duas) são anexadas à anterior.
+    """
+    rows: list[dict] = []
+    block: dict[str, str] = {}
+
+    def flush_block() -> None:
+        if block.get("level"):
+            rows.append(_alarm_entry(
+                block["level"], block.get("id", ""), block.get("stamp", ""),
+                block.get("description") or block.get("name", ""),
+                block.get("raw", "")))
+        block.clear()
+
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped or re.match(r"^[-=+]{3,}$", stripped):
+            continue
+        if re.match(r"^Total\b", stripped, re.IGNORECASE):
+            continue
+
+        field = _ALARM_KV_RE.match(stripped)
+        if field:
+            key = field.group(1).strip().lower()
+            value = field.group(2).strip()
+            if "name" in key:
+                flush_block()
+                block["name"] = value
+            elif "level" in key or "severity" in key:
+                block["level"] = value
+            elif "time" in key or "date" in key:
+                block["stamp"] = value
+            elif "description" in key or "reason" in key or "cause" in key:
+                block["description"] = value
+            elif key.endswith("id"):
+                block["id"] = value
+            else:
+                continue
+            block["raw"] = f"{block.get('raw', '')}\n{stripped}".strip()
+            continue
+
+        level_match = _ALARM_LEVEL_RE.search(stripped)
+        if not level_match:
+            if rows and line.startswith((" ", "\t")):
+                # Descrição longa quebrada pelo VRP na linha seguinte.
+                rows[-1]["description"] = (
+                    f"{rows[-1]['description']} {stripped}").strip()
+                rows[-1]["raw"] += " " + stripped
+            continue
+        if re.match(r"^(Sequence|AlarmId|Level|Date|Description)\b",
+                    stripped, re.IGNORECASE):
+            continue                      # cabeçalho da tabela
+
+        date_match = _ALARM_DATE_RE.search(stripped)
+        id_match = _ALARM_ID_RE.search(stripped)
+        description = _ALARM_SEQ_RE.sub("", stripped)
+        for match in (level_match, date_match, id_match):
+            if match:
+                description = description.replace(match.group(0), " ", 1)
+        rows.append(_alarm_entry(
+            level_match.group(1), id_match.group(1) if id_match else "",
+            date_match.group(1) if date_match else "", description, stripped))
+    flush_block()
     return rows
 
 

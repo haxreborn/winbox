@@ -187,7 +187,7 @@ class DashboardPanel(QWidget):
         self._health_labels: dict[str, QLabel] = {}
         for row, key in enumerate(
                 ["Interfaces", "Vizinhos BGP", "Vizinhos OSPF",
-                 "Alarmes recentes", "Fila de comandos"]):
+                 "Alarmes ativos", "Fila de comandos"]):
             health.addWidget(QLabel(f"<b>{key}:</b>"), row, 0, Qt.AlignTop)
             value = QLabel("—")
             value.setWordWrap(True)
@@ -278,7 +278,7 @@ class DashboardPanel(QWidget):
             f"{stats['cache_hits']} do cache · {stats['coalesced']} unificados"
             + (f" · {stats['dropped']} descartados"
                if stats["dropped"] else ""))
-        for key in ("Vizinhos BGP", "Vizinhos OSPF", "Alarmes recentes"):
+        for key in ("Vizinhos BGP", "Vizinhos OSPF", "Alarmes ativos"):
             if key in self._info:
                 self._health_labels[key].setText(self._info[key])
 
@@ -317,11 +317,17 @@ class DashboardPanel(QWidget):
             bgp = parsers.parse_bgp_peers(query("display bgp peer", 25.0))
             ospf = parsers.parse_ospf_peers(
                 query("display ospf peer brief", 20.0))
-            logs = query("display logbuffer", 25.0)
-            alarms = sum(1 for line in logs.splitlines()
-                         if "/4/" in line or "/3/" in line or "/2/" in line)
+            # Alarme ATIVO é o que ainda vale; o logbuffer conta também o
+            # que já foi resolvido. Se o equipamento não tiver o comando,
+            # cai para a contagem de eventos graves do buffer.
+            alarms = parsers.parse_active_alarms(
+                query("display alarm active", 25.0))
+            fallback = 0
+            if not alarms:
+                logs = parsers.parse_logbuffer(query("display logbuffer", 25.0))
+                fallback = sum(1 for entry in logs if entry["level"] <= 4)
             return {"version": version, "bgp": bgp, "ospf": ospf,
-                    "alarms": alarms}
+                    "alarms": alarms, "fallback": fallback}
 
         def done(data: dict) -> None:
             self._slow_busy = False
@@ -345,9 +351,22 @@ class DashboardPanel(QWidget):
             self._info["Vizinhos OSPF"] = (
                 f"{full} em Full de {len(ospf)}" if ospf
                 else "sem OSPF configurado")
-            self._info["Alarmes recentes"] = (
-                f"{data['alarms']} mensagens de nível crítico/erro/aviso"
-                if data["alarms"] else "nenhum no buffer")
+            alarms = data["alarms"]
+            if alarms:
+                counters: dict[int, int] = {}
+                for alarm in alarms:
+                    counters[alarm["level"]] = counters.get(
+                        alarm["level"], 0) + 1
+                detail = " · ".join(
+                    f"{count} {parsers.ALARM_LABELS.get(level, level)}"
+                    for level, count in sorted(counters.items()))
+                self._info["Alarmes ativos"] = f"{len(alarms)} — {detail}"
+            elif data["fallback"]:
+                self._info["Alarmes ativos"] = (
+                    f"nenhum ativo · {data['fallback']} evento(s) grave(s) "
+                    f"no logbuffer")
+            else:
+                self._info["Alarmes ativos"] = "nenhum"
 
         def fail(_message: str) -> None:
             self._slow_busy = False

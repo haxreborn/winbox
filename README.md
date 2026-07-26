@@ -29,7 +29,7 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
   | Painel | visão geral ao vivo: CPU, memória, temperatura, banda total, ranking das portas mais carregadas, estado de BGP/OSPF/interfaces e identificação do equipamento — tudo numa janela só |
   | Interfaces | lista com RX/TX ao vivo (vindos do coletor, sem consulta extra), habilitar/desabilitar, descrição, IP, MTU e **Ver no gráfico**; duplo clique abre os detalhes da porta com o gráfico dela embutido |
   | Tráfego (gráfico) | gráfico em tempo real de **várias interfaces ao mesmo tempo**, em modo sobreposto, grade ou empilhado; fonte **SNMP** ou **CLI (SSH)** |
-  | Configuração | baixa o `display current-configuration`, navega por blocos, procura texto, **compara com a config salva** (mostra o que se perderia num reboot), tira instantâneos para ver o que mudou, salva em arquivo e envia blocos colados |
+  | Configuração | baixa o `display current-configuration`, navega por blocos, procura texto, **compara com a config salva** (mostra o que se perderia num reboot), guarda **histórico de cópias em disco** e compara duas datas, tira instantâneos, salva em arquivo e envia blocos colados |
   | Endereços IP | visão `display ip interface brief`, adicionar/remover IPs |
   | VLANs | criar/remover VLAN, porta em modo *access* e *trunk* |
   | Rotas | tabela de roteamento, criar/remover rotas estáticas |
@@ -45,6 +45,7 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
   | Usuários | contas locais AAA: criar/remover, privilégio e serviços (protege o usuário da sessão) |
   | Vizinhos (LLDP) | descoberta de equipamentos conectados, como o *Neighbors* do WinBox |
   | Serviços | NTP, comunidade SNMP v2c, SSH (STelnet) e LLDP |
+  | Alarmes | `display alarm active` — o que o equipamento está reclamando **agora**, por severidade, mais o histórico de traps; duplo clique num alarme que cita uma porta abre o gráfico dela |
   | Logs | eventos do `display logbuffer` em tabela, coloridos por severidade, com filtro por nível/módulo/texto, contadores e modo **Acompanhar** que destaca o que chegou de novo |
   | Ferramentas | ping, **ping contínuo com gráfico de latência** (perdas marcadas em vermelho, variação/jitter) e traceroute em tabela — tudo executado a partir do equipamento, com origem e VRF opcionais |
   | Sistema | versão, CPU, memória, uptime, renomear (`sysname`), **salvar configuração** |
@@ -55,6 +56,17 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
   e `return`), com opção de copiar ou cancelar — nada é enviado sem o seu OK.
 - **Tudo assíncrono**: as consultas SSH rodam em threads; a janela nunca
   congela.
+- **Busca global (Ctrl+K)**: com mais de trinta módulos, digitar é mais
+  rápido que procurar no menu. A busca casa por subsequência e ignora
+  acento — `trfg` acha *Tráfego (gráfico)*, `cfg` acha *Configuração* — e
+  também encontra ações (salvar configuração, organizar janelas, Safe Mode).
+- **Histórico de configurações em disco**: a cada conexão o módulo
+  *Configuração* guarda uma cópia datada em
+  `~/.huaweibox/backups/<equipamento>/`. Cópias idênticas à anterior não
+  geram arquivo novo, então conectar dez vezes num equipamento parado não
+  cria dez cópias iguais. Em *Histórico…* dá para abrir qualquer cópia
+  antiga, comparar duas datas ou comparar uma delas com a configuração de
+  agora — que é como se descobre o que mudou entre ontem e hoje.
 - **O ambiente volta como você deixou**: ao reconectar no mesmo
   equipamento, as janelas que estavam abertas reabrem no mesmo lugar e
   tamanho, as interfaces marcadas no gráfico voltam marcadas (com o mesmo
@@ -175,10 +187,12 @@ huawei_winbox/
 │   ├── snmp.py              # cliente SNMP v2c próprio (BER, GET-BULK) — só leitura
 │   ├── history.py           # séries temporais em memória (por sessão)
 │   ├── workspace.py         # layout e preferências por equipamento
+│   ├── backup.py            # histórico de configurações em disco
 │   └── profiles.py          # equipamentos salvos (~/.huaweibox)
 └── ui/
     ├── login.py             # tela de conexão estilo WinBox
     ├── mainwindow.py        # menu lateral + área MDI
+    ├── palette.py           # busca global (Ctrl+K)
     ├── command_preview.py   # pré-visualização do CLI antes do envio
     ├── forms.py             # formulários genéricos
     ├── worker.py            # execução SSH fora da thread da UI

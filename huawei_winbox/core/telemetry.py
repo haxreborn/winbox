@@ -77,6 +77,11 @@ class TelemetryEngine:
         self._client: snmp.SnmpV2cClient | None = None
         self._meta: dict[int, dict] = {}
         self._meta_at = 0.0
+        # Qual fonte montou os metadados. Importa porque as chaves não são
+        # comparáveis: o SNMP usa o ifIndex real do equipamento e a CLI usa
+        # a ordem da listagem. Trocar de fonte sem refazer o mapa casaria
+        # contador de uma porta com o nome de outra.
+        self._meta_source = ""
         self._prev: dict[int, tuple[float, int, int]] = {}
         self._counter_width = 64
         self._speeds: dict[str, int] = {}
@@ -360,6 +365,7 @@ class TelemetryEngine:
         now = time.time()
         with self._lock:
             need_meta = (not self._meta
+                         or self._meta_source != SOURCE_SNMP
                          or now - self._meta_at > _META_REFRESH)
         if need_meta:
             meta = client.interface_metadata()
@@ -369,6 +375,8 @@ class TelemetryEngine:
             with self._lock:
                 self._meta = meta
                 self._meta_at = now
+                self._meta_source = SOURCE_SNMP
+                self._prev.clear()      # índices novos: linha de base zerada
 
         counters, width = client.interface_counters()
         sample_at = time.time()
@@ -461,6 +469,10 @@ class TelemetryEngine:
             with self._lock:
                 self._speeds = speeds
                 self._speeds_at = now
+            # O dump já traz o estado de cada porta: aproveita antes de sair
+            # por este caminho, senão o Painel ficaria sem os metadados até
+            # o próximo ciclo.
+            self._absorb_states(parsers.parse_interface_states(text))
             if rates_now:
                 self._store_cli_rates(
                     {n: (float(r), float(t)) for n, (r, t) in rates_now.items()},
@@ -471,6 +483,10 @@ class TelemetryEngine:
             "display interface brief", timeout=30.0, priority=BACKGROUND,
             ttl=max(1.0, self._interval * 0.6), max_wait=self._interval * 4,
             tag="telemetry")
+        # O "brief" já traz o estado de cada porta; sem aproveitá-lo, o modo
+        # CLI ficava sem metadados nenhum e o Painel não sabia dizer quantas
+        # interfaces estavam ativas nem a tabela do gráfico mostrava o estado.
+        self._absorb_brief_meta(brief)
         utilization = parsers.parse_interface_utilization(brief)
         with self._lock:
             speeds = dict(self._speeds)
@@ -494,6 +510,39 @@ class TelemetryEngine:
                     parsers.parse_interface_bandwidth_bps(text))
         self._store_cli_rates(rates, time.time())
         self._sample_health_cli(time.time())
+
+    def _absorb_brief_meta(self, brief: str) -> None:
+        """Monta os metadados a partir do ``display interface brief``."""
+        rows = parsers.parse_interface_brief(brief)
+        self._absorb_states({row["name"]: (row["phy"], row["protocol"])
+                             for row in rows})
+
+    def _absorb_states(self, states: dict[str, tuple[str, str]]) -> None:
+        """Guarda nome/estado/velocidade das portas vindos da CLI.
+
+        As chaves são um índice sequencial, não o ifIndex do equipamento —
+        por isso ``_meta_source`` marca a origem: trocar para SNMP obriga a
+        refazer o mapa antes de casar contadores com nomes.
+        """
+        if not states:
+            return
+        with self._lock:
+            speeds = dict(self._speeds)
+        meta = {}
+        for index, (name, (phy, _protocol)) in enumerate(sorted(states.items()),
+                                                         start=1):
+            normalized = phy.lower().lstrip("*^")
+            meta[index] = {
+                "name": name,
+                "alias": "",
+                "speed_bps": speeds.get(name, 0),
+                "oper": "up" if normalized.startswith("up") else "down",
+                "admin": "down" if phy.startswith("*") else "up",
+            }
+        with self._lock:
+            self._meta = meta
+            self._meta_at = time.time()
+            self._meta_source = SOURCE_CLI
 
     def _store_cli_rates(self, rates: dict[str, tuple[float, float]],
                          when: float) -> None:

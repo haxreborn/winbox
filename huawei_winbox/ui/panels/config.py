@@ -30,8 +30,10 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QPlainTextEdit, QSplitter, QListWidget, QListWidgetItem,
     QMessageBox, QFileDialog, QDialog, QDialogButtonBox, QComboBox, QTextEdit,
+    QInputDialog,
 )
 
+from ...core import backup
 from ...core.scheduler import BACKGROUND, NORMAL
 from ..command_preview import CommandPreviewDialog
 from ..worker import run_async
@@ -120,8 +122,107 @@ class SendBlockDialog(QDialog):
         return out
 
 
+class BackupHistoryDialog(QDialog):
+    """Histórico de cópias em disco: abrir uma, ou comparar duas."""
+
+    def __init__(self, host: str, current: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Histórico de configurações — {host}")
+        self.resize(760, 480)
+        self._host = host
+        self._current = current
+        self.result_text = ""
+        self.result_title = ""
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(
+            "Selecione <b>uma</b> cópia para abrir, ou <b>duas</b> para ver "
+            "o que mudou entre elas. Com uma selecionada, "
+            "<b>Comparar com a atual</b> mostra o que mudou até agora."))
+
+        self.list = QListWidget()
+        self.list.setSelectionMode(QListWidget.ExtendedSelection)
+        self.list.itemSelectionChanged.connect(self._selection_changed)
+        layout.addWidget(self.list, 1)
+
+        row = QHBoxLayout()
+        self.open_btn = QPushButton("Abrir")
+        self.open_btn.clicked.connect(lambda: self._finish("open"))
+        row.addWidget(self.open_btn)
+        self.diff_btn = QPushButton("Comparar as duas")
+        self.diff_btn.clicked.connect(lambda: self._finish("diff"))
+        row.addWidget(self.diff_btn)
+        self.vs_now_btn = QPushButton("Comparar com a atual")
+        self.vs_now_btn.clicked.connect(lambda: self._finish("now"))
+        row.addWidget(self.vs_now_btn)
+        row.addStretch(1)
+        self.folder_label = QLabel("")
+        self.folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        row.addWidget(self.folder_label)
+        layout.addLayout(row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.button(QDialogButtonBox.Close).setText("Fechar")
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self._reload()
+
+    def _reload(self) -> None:
+        self.list.clear()
+        entries = backup.list_backups(self._host)
+        for entry in entries:
+            when = time.strftime("%d/%m/%Y  %H:%M:%S",
+                                 time.localtime(entry["when"]))
+            size = f"{entry['size'] / 1024:.1f} kB"
+            label = f"  —  {entry['label']}" if entry["label"] else ""
+            item = QListWidgetItem(f"{when}      {size:>9}{label}")
+            item.setData(Qt.UserRole, entry)
+            self.list.addItem(item)
+        self.folder_label.setText(
+            f"{len(entries)} cópia(s) em {backup.directory_for(self._host)}")
+        self._selection_changed()
+
+    def _selected(self) -> list[dict]:
+        return [item.data(Qt.UserRole) for item in self.list.selectedItems()]
+
+    def _selection_changed(self) -> None:
+        count = len(self._selected())
+        self.open_btn.setEnabled(count == 1)
+        self.vs_now_btn.setEnabled(count == 1)
+        self.diff_btn.setEnabled(count == 2)
+
+    def _finish(self, mode: str) -> None:
+        chosen = sorted(self._selected(), key=lambda e: e["when"])
+        if mode == "open" and len(chosen) == 1:
+            self.result_text = backup.read(chosen[0]["path"])
+            self.result_title = _stamp_label(chosen[0])
+        elif mode == "diff" and len(chosen) == 2:
+            self.result_text = None       # sinaliza comparação ao chamador
+            self.result_title = (_stamp_label(chosen[0]),
+                                 _stamp_label(chosen[1]),
+                                 backup.read(chosen[0]["path"]),
+                                 backup.read(chosen[1]["path"]))
+        elif mode == "now" and len(chosen) == 1:
+            self.result_text = None
+            self.result_title = (_stamp_label(chosen[0]), "em execução agora",
+                                 backup.read(chosen[0]["path"]),
+                                 self._current)
+        else:
+            return
+        self.accept()
+
+
+def _stamp_label(entry: dict) -> str:
+    # Com segundos: duas cópias do mesmo minuto ficavam com rótulos
+    # idênticos, e a comparação não dizia qual era qual.
+    when = time.strftime("%d/%m %H:%M:%S", time.localtime(entry["when"]))
+    return f"{when}{' — ' + entry['label'] if entry['label'] else ''}"
+
+
 class ConfigPanel(QWidget):
     title = "Configuração"
+    state_key = "config"
 
     def __init__(self, session, parent=None):
         super().__init__(parent)
@@ -133,6 +234,7 @@ class ConfigPanel(QWidget):
         self._snapshot_at = 0.0
         self._sections: list[tuple[str, str]] = []
         self._watch_at = 0.0
+        self._auto_backup_done = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
@@ -184,8 +286,14 @@ class ConfigPanel(QWidget):
              "Guarda o estado atual para comparar depois."),
             ("Comparar com instantâneo", lambda: self._diff_snapshot(False),
              "Mostra o que mudou desde o instantâneo marcado."),
+            ("Backup agora", self._backup_now,
+             "Guarda uma cópia datada em ~/.huaweibox/backups. Cópias "
+             "idênticas à anterior não geram arquivo novo."),
+            ("Histórico…", self._show_history,
+             "Abre cópias antigas e compara duas datas — é como se descobre "
+             "o que mudou entre ontem e hoje."),
             ("Salvar em arquivo…", self._save_file,
-             "Backup da configuração em texto."),
+             "Exporta a configuração para onde você escolher."),
             ("Enviar bloco…", self._send_block,
              "Cola comandos e envia (com pré-visualização)."),
         ]:
@@ -248,10 +356,18 @@ class ConfigPanel(QWidget):
             self._sections = split_sections(text)
             self._fill_sections()
             lines = len(text.splitlines())
+            note = ""
+            # Backup automático na primeira leitura da sessão: se nada mudou
+            # desde a última cópia, nenhum arquivo é criado.
+            if not self._auto_backup_done:
+                self._auto_backup_done = True
+                entry = backup.save(self.session.host, text, "automático")
+                if entry is not None:
+                    note = "  ·  cópia guardada no histórico"
             self.status.setText(
                 f"Configuração em execução — {lines} linhas em "
                 f"{len(self._sections)} blocos · baixada às "
-                f"{time.strftime('%H:%M:%S')}")
+                f"{time.strftime('%H:%M:%S')}{note}")
 
         def fail(message: str) -> None:
             self._busy = False
@@ -491,6 +607,51 @@ class ConfigPanel(QWidget):
     # ================================================================== #
     # Arquivo / envio
     # ================================================================== #
+    def _backup_now(self) -> None:
+        if not self._current.strip():
+            QMessageBox.information(
+                self, self.title,
+                "Baixe a configuração antes de guardar uma cópia.")
+            return
+        label, ok = QInputDialog.getText(
+            self, "Backup da configuração",
+            "Rótulo para esta cópia (opcional — ex.: 'antes do BGP'):")
+        if not ok:
+            return
+        entry = backup.save(self.session.host, self._current, label.strip())
+        if entry is None:
+            self.status.setText(
+                "Nada mudou desde a última cópia — nenhum arquivo novo "
+                "foi criado.")
+            return
+        self.status.setText(f"Cópia guardada em {entry['path']}")
+
+    def _show_history(self) -> None:
+        dialog = BackupHistoryDialog(self.session.host, self._current, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        if dialog.result_text:
+            # Abrir uma cópia: mostra o conteúdo dela, em blocos.
+            self._sections = split_sections(dialog.result_text)
+            self._fill_sections()
+            self.viewer.setPlainText(dialog.result_text)
+            self.status.setText(
+                f"Mostrando a cópia de {dialog.result_title} — "
+                f"'Atualizar' volta para a configuração em execução.")
+            return
+        left_label, right_label, left, right = dialog.result_title
+        changes = self._render_diff(
+            left, right, left_label, right_label,
+            f"Nada mudou entre {left_label} e {right_label}.")
+        if changes:
+            self.status.setText(
+                f"{changes} linha(s) diferem entre {left_label} e "
+                f"{right_label}. Verde = existe em '{right_label}'; "
+                f"vermelho = só em '{left_label}'.")
+        else:
+            self.status.setText(
+                f"Nada mudou entre {left_label} e {right_label}.")
+
     def _save_file(self) -> None:
         if not self._current:
             QMessageBox.information(self, self.title,

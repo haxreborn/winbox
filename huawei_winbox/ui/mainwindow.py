@@ -22,6 +22,7 @@ from ..core import telemetry, workspace
 from ..core import history as history_mod
 from . import icons
 from .forms import SimpleForm
+from .palette import CommandPalette
 from .worker import run_async
 from .panels.dashboard import DashboardPanel
 from .panels.interfaces import InterfacesPanel
@@ -44,6 +45,7 @@ from .panels.lldp import LldpPanel
 from .panels.services import ServicesPanel
 from .panels.snmp import SnmpPanel
 from .panels.logs import LogsPanel
+from .panels.alarms import AlarmsPanel
 from .panels.tools import ToolsPanel
 from .panels.system import SystemPanel
 from .panels.terminal import TerminalPanel
@@ -82,6 +84,7 @@ _MENU = [
     ("Vizinhos (LLDP)", LldpPanel),
     ("Serviços", ServicesPanel),
     ("SNMP", SnmpPanel),
+    ("Alarmes", AlarmsPanel),
     ("Logs", LogsPanel),
     ("Hardware", HardwarePanel),
     ("Ferramentas", ToolsPanel),
@@ -354,6 +357,13 @@ class MainWindow(QMainWindow):
             a.triggered.connect(slot)
             m_win.addAction(a)
 
+        act_find = QAction("Ir para módulo…", self)
+        act_find.setShortcut("Ctrl+K")
+        act_find.setToolTip("Abre qualquer módulo ou ação digitando o nome.")
+        act_find.triggered.connect(self._open_palette)
+        m_win.addSeparator()
+        m_win.addAction(act_find)
+
         m_help = bar.addMenu("&Ajuda")
         a_about = QAction("Sobre o HuaweiBox", self)
         a_about.triggered.connect(self._about)
@@ -488,6 +498,32 @@ class MainWindow(QMainWindow):
     # ================================================================== #
     # Ações
     # ================================================================== #
+    def _palette_entries(self) -> list[tuple[str, str, object]]:
+        """Módulos e ações globais oferecidos pela busca (Ctrl+K)."""
+        entries: list[tuple[str, str, object]] = [
+            (label, "módulo",
+             (lambda l=label: self.open_named_panel(l)))
+            for label, _cls in _MENU
+        ]
+        entries += [
+            ("Salvar configuração na flash", "ação", self._save_config),
+            ("Fechar todas as janelas", "ação",
+             self.mdi.closeAllSubWindows),
+            ("Organizar janelas lado a lado", "ação", self.mdi.tileSubWindows),
+            ("Organizar janelas em cascata", "ação",
+             self.mdi.cascadeSubWindows),
+            ("Comunidade SNMP para leitura", "ação", self._ask_snmp_community),
+            ("Desconectar", "ação", self.close),
+        ]
+        if self.session.supports_safe_mode:
+            entries.append(("Alternar Safe Mode", "ação",
+                            self.safe_btn.toggle))
+        return entries
+
+    def _open_palette(self) -> None:
+        dialog = CommandPalette(self._palette_entries(), self)
+        dialog.exec()
+
     def _ask_snmp_community(self) -> None:
         values = SimpleForm.ask(
             "Coleta via SNMP (somente leitura)",
