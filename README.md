@@ -45,6 +45,7 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
   | Usuários | contas locais AAA: criar/remover, privilégio e serviços (protege o usuário da sessão) |
   | Vizinhos (LLDP) | descoberta de equipamentos conectados, como o *Neighbors* do WinBox |
   | Serviços | NTP, comunidade SNMP v2c, SSH (STelnet) e LLDP |
+  | Saúde das portas | diagnóstico óptico (DOM) de todos os transceptores com os **limiares do próprio módulo** e a **folga em dB** até o piso, mais os erros que subiram na janela escolhida (não o acumulado desde o boot) |
   | Alarmes | `display alarm active` — o que o equipamento está reclamando **agora**, por severidade, mais o histórico de traps; duplo clique num alarme que cita uma porta abre o gráfico dela |
   | Logs | eventos do `display logbuffer` em tabela, coloridos por severidade, com filtro por nível/módulo/texto, contadores e modo **Acompanhar** que destaca o que chegou de novo |
   | Ferramentas | ping, **ping contínuo com gráfico de latência** (perdas marcadas em vermelho, variação/jitter) e traceroute em tabela — tudo executado a partir do equipamento, com origem e VRF opcionais |
@@ -119,6 +120,26 @@ lendo `sysName`, `sysUpTime`, `sysDescr` e a contagem de interfaces.
 O cliente SNMP v2c é implementado internamente (codificação BER própria),
 então **não há dependências novas** — o projeto continua usando apenas
 PySide6 e paramiko.
+
+## Saúde das portas: qual fibra vai cair primeiro
+
+O módulo **Saúde das portas** responde duas perguntas do dia a dia que
+nenhuma tela do equipamento responde direto.
+
+**Óptica.** Lista o diagnóstico (DOM) de todos os transceptores junto com
+os **limiares do próprio módulo**. Um número solto não diz nada — −24 dBm
+é ruim num módulo cujo piso é −14 e perfeitamente normal num de −28 — por
+isso a coluna que importa é a **folga**: quantos dB ainda faltam para o
+piso. Abaixo de 3 dB a porta já entra em *atenção*, antes de qualquer
+alarme disparar. Quando o equipamento só devolve a tabela (sem limiares),
+o aplicativo os aprende porta a porta em segundo plano, em lotes pequenos
+e uma única vez — limiar é propriedade do módulo, não medição.
+
+**Erros.** Mostra quanto os contadores subiram **na janela escolhida**, e
+não o acumulado desde o boot: cinco milhões de erros de três anos atrás é
+ruído, duzentos no último minuto é incêndio. Os contadores saem do mesmo
+`display interface brief` que a telemetria já executa (ou da IF-MIB, com
+SNMP), então acompanhar isso não custa consulta nenhuma a mais.
 
 ## Como o app se mantém responsivo com muitas janelas abertas
 

@@ -100,9 +100,15 @@ class TelemetryEngine:
         self.last_sample_at = 0.0
         self.last_duration = 0.0
         self.rates: dict[str, tuple[float, float]] = {}
+        # Contadores de erro por porta. São acumulados desde o boot, então
+        # o valor absoluto diz pouco — 5 milhões de erros de três anos atrás
+        # é ruído. O que importa é quanto subiu na última janela, e por isso
+        # os totais vão para o histórico: a diferença sai de lá.
+        self.errors: dict[str, tuple[int, int]] = {}
         self.health: dict[str, float | None] = {
             "cpu": None, "memory": None, "temperature": None}
         self._health_at = 0.0
+        self._errors_at = 0.0
 
     # ================================================================== #
     # Configuração
@@ -225,6 +231,7 @@ class TelemetryEngine:
                 "requested_source": self._source,
                 "interval": self._interval,
                 "rates": dict(self.rates),
+                "errors": dict(self.errors),
                 "health": dict(self.health),
                 "error": self.last_error,
                 "at": self.last_sample_at,
@@ -419,6 +426,30 @@ class TelemetryEngine:
             self.generation += 1
 
         self._sample_health_snmp(client, sample_at)
+        self._sample_errors_snmp(client, sample_at)
+
+    def _sample_errors_snmp(self, client, when: float) -> None:
+        """Erros por porta via IF-MIB, na cadência lenta da saúde."""
+        with self._lock:
+            due = when - self._errors_at >= _HEALTH_EVERY
+            meta = self._meta
+        if not due:
+            return
+        with self._lock:
+            self._errors_at = when
+        try:
+            per_index = client.interface_errors()
+        except snmp.SnmpError:
+            return
+        counters = {}
+        for index, values in per_index.items():
+            info = meta.get(index)
+            if not info or not info.get("name"):
+                continue
+            counters[info["name"]] = (values["in_errors"] + values["in_discards"],
+                                      values["out_errors"] + values["out_discards"])
+        if counters:
+            self._record_errors(counters, when)
 
     @staticmethod
     def _delta_bps(previous: int, current: int, dt: float,
@@ -512,10 +543,30 @@ class TelemetryEngine:
         self._sample_health_cli(time.time())
 
     def _absorb_brief_meta(self, brief: str) -> None:
-        """Monta os metadados a partir do ``display interface brief``."""
+        """Monta metadados e contadores de erro a partir do ``brief``."""
         rows = parsers.parse_interface_brief(brief)
         self._absorb_states({row["name"]: (row["phy"], row["protocol"])
                              for row in rows})
+        counters = {row["name"]: (row["in_errors"], row["out_errors"])
+                    for row in rows
+                    if row["in_errors"] is not None
+                    and row["out_errors"] is not None}
+        if counters:
+            self._record_errors(counters, time.time())
+
+    def _record_errors(self, counters: dict[str, tuple[int, int]],
+                       when: float) -> None:
+        """Guarda os contadores de erro no histórico.
+
+        Guarda o **total**, não a diferença: assim qualquer janela de tempo
+        pode ser calculada depois (a diferença entre a primeira e a última
+        amostra da janela), sem prender o dado à cadência da coleta.
+        """
+        for name, (in_errors, out_errors) in counters.items():
+            self.history.add_metric(f"errin:{name}", in_errors, when=when)
+            self.history.add_metric(f"errout:{name}", out_errors, when=when)
+        with self._lock:
+            self.errors = dict(counters)
 
     def _absorb_states(self, states: dict[str, tuple[str, str]]) -> None:
         """Guarda nome/estado/velocidade das portas vindos da CLI.

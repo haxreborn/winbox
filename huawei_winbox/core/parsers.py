@@ -25,11 +25,18 @@ INTERFACE_IN_TEXT = re.compile(
 
 def parse_interface_brief(text: str) -> list[dict]:
     """``display interface brief`` ->
-    [{name, phy, protocol, in_util, out_util}]"""
+    [{name, phy, protocol, in_util, out_util, in_errors, out_errors}]
+
+    As duas últimas colunas (``inErrors``/``outErrors``) só existem em
+    parte das versões; quando faltam, vêm como ``None``. Elas valem muito:
+    saem do mesmo comando que a telemetria já executa, então acompanhar
+    erros por porta não custa consulta nenhuma a mais.
+    """
     rows = []
     pattern = re.compile(
         rf"^({_IFACE_NAME})\s+(\*?[Uu]p|[Dd]own|\*down|\^down)\s+(\S+)"
         r"(?:\s+([\d.]+%|-+)\s+([\d.]+%|-+))?"
+        r"(?:\s+(\d+)\s+(\d+))?"
     )
     for line in text.splitlines():
         m = pattern.match(line.strip())
@@ -41,6 +48,8 @@ def parse_interface_brief(text: str) -> list[dict]:
             "protocol": m.group(3),
             "in_util": m.group(4) or "",
             "out_util": m.group(5) or "",
+            "in_errors": int(m.group(6)) if m.group(6) is not None else None,
+            "out_errors": int(m.group(7)) if m.group(7) is not None else None,
         })
     return rows
 
@@ -1015,6 +1024,223 @@ def parse_mac_table(text: str) -> list[dict]:
             "interface": interface,
         })
     return rows
+
+
+# ──────────────────────────────────────────────────────────────────────────── #
+# Diagnóstico óptico (DOM) dos transceptores
+# ──────────────────────────────────────────────────────────────────────────── #
+_DOM_FIELDS = {
+    "temperature": r"Temperature",
+    "voltage": r"Voltage",
+    "bias": r"(?:Bias|Laser Bias)\s*Current",
+    "rx_power": r"(?:Current\s+)?RX\s*Power",
+    "tx_power": r"(?:Current\s+)?TX\s*Power",
+}
+_DOM_THRESHOLDS = {
+    "rx_high": r"RX\s*Power\s*High",
+    "rx_low": r"RX\s*Power\s*Low",
+    "tx_high": r"TX\s*Power\s*High",
+    "tx_low": r"TX\s*Power\s*Low",
+    "bias_high": r"Bias\s*(?:Current\s*)?High",
+    "bias_low": r"Bias\s*(?:Current\s*)?Low",
+    "temp_high": r"Temp(?:erature)?\s*High",
+    "temp_low": r"Temp(?:erature)?\s*Low",
+}
+_NUMBER = r"(-?\d+(?:\.\d+)?)"
+
+
+def _dom_value(line: str, label: str) -> float | None:
+    """Lê ``<label> ... : <número>`` tolerando unidade entre parênteses."""
+    match = re.search(rf"{label}[^:]*:\s*{_NUMBER}", line, re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def parse_transceiver_diagnosis(text: str,
+                                default_name: str | None = None) -> dict[str, dict]:
+    """Saída de ``display transceiver ...`` -> {interface: medições}.
+
+    ``default_name`` é o nome da porta a quem atribuir os valores que
+    aparecem **antes** de qualquer cabeçalho. Consultando uma porta
+    específica (``display transceiver interface X verbose``), boa parte
+    das versões não repete o nome dela na saída — quem perguntou já sabe
+    qual é, e sem isso o resultado seria descartado por não ter dono.
+
+    Cobre as duas formas em que o VRP entrega o diagnóstico óptico:
+
+    * **tabela** (``display transceiver diagnosis interface``), uma linha
+      por porta com temperatura, tensão, corrente e potências;
+    * **blocos verbosos** (``display transceiver all`` /
+      ``... interface X verbose``), que além das medições trazem os
+      **limiares** de alarme do módulo.
+
+    Os limiares são o que transforma um número solto em diagnóstico: −24
+    dBm é ruim num módulo cujo piso é −14 e perfeitamente normal num de
+    −28. Quando eles vêm, ``margin_db`` diz quantos dB ainda faltam para o
+    piso — é o número que antecipa um enlace prestes a cair.
+    """
+    ports: dict[str, dict] = {}
+    current = ""
+    if default_name:
+        current = expand_iface_name(default_name)
+        ports[current] = _empty_dom(current)
+    # Linha de tabela: nome da porta seguido de 3 a 5 números.
+    table_re = re.compile(
+        rf"^({_IFACE_NAME})\s+{_NUMBER}\s+{_NUMBER}\s+{_NUMBER}"
+        rf"(?:\s+{_NUMBER})?(?:\s+{_NUMBER})?\s*$")
+    header_re = re.compile(rf"^({_IFACE_NAME})\b.*(?:transceiver|:)?\s*$",
+                           re.IGNORECASE)
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or re.match(r"^[-=]{3,}$", line):
+            continue
+
+        match = table_re.match(line)
+        if match:
+            name = expand_iface_name(match.group(1))
+            values = [float(v) if v is not None else None
+                      for v in match.groups()[1:]]
+            entry = ports.setdefault(name, _empty_dom(name))
+            # Ordem usual: temperatura, tensão, corrente, RX, TX.
+            for key, value in zip(
+                    ("temperature", "voltage", "bias", "rx_power", "tx_power"),
+                    values):
+                if value is not None:
+                    entry[key] = value
+            current = name
+            continue
+
+        # Cabeçalho de bloco: "GigabitEthernet0/0/1 transceiver information:"
+        if header_re.match(line) and not re.search(r":\s*-?\d", line):
+            name = expand_iface_name(header_re.match(line).group(1))
+            current = name
+            ports.setdefault(name, _empty_dom(name))
+            continue
+
+        if not current:
+            continue
+        entry = ports[current]
+        if re.search(r"Transceiver Type\s*:", line, re.IGNORECASE):
+            entry["type"] = line.split(":", 1)[1].strip()
+            continue
+        if re.search(r"Vendor (?:Name|PN)\s*:", line, re.IGNORECASE):
+            entry.setdefault("vendor", line.split(":", 1)[1].strip())
+            continue
+        if re.search(r"Wavelength", line, re.IGNORECASE):
+            value = _dom_value(line, "Wavelength")
+            if value:
+                entry["wavelength"] = value
+            continue
+        # Limiares antes das medições: "RX Power High Threshold" contém
+        # "RX Power" e casaria com a medição se testado depois.
+        matched = False
+        for key, label in _DOM_THRESHOLDS.items():
+            if re.search(rf"{label}[^:]*Threshold", line, re.IGNORECASE):
+                value = _dom_value(line, label)
+                if value is not None:
+                    entry[key] = value
+                matched = True
+                break
+        if matched:
+            continue
+        for key, label in _DOM_FIELDS.items():
+            if re.search(rf"{label}\s*(?:\([^)]*\))?\s*:", line, re.IGNORECASE):
+                value = _dom_value(line, label)
+                if value is not None:
+                    entry[key] = value
+                break
+
+    for entry in ports.values():
+        _evaluate_dom(entry)
+    return {name: entry for name, entry in ports.items()
+            if entry["rx_power"] is not None or entry["tx_power"] is not None
+            or entry["type"] or entry["rx_low"] is not None}
+
+
+def _empty_dom(name: str) -> dict:
+    return {
+        "name": name, "type": "", "vendor": "", "wavelength": None,
+        "temperature": None, "voltage": None, "bias": None,
+        "rx_power": None, "tx_power": None,
+        "rx_high": None, "rx_low": None, "tx_high": None, "tx_low": None,
+        "bias_high": None, "bias_low": None,
+        "temp_high": None, "temp_low": None,
+        "status": "", "margin_db": None,
+    }
+
+
+# Folga (dB) abaixo da qual a porta é considerada em risco, mesmo sem ter
+# cruzado o limiar. Um enlace que trabalha a menos de 3 dB do piso costuma
+# cair na primeira chuva.
+DOM_WARN_MARGIN_DB = 3.0
+
+
+DOM_THRESHOLD_KEYS = ("rx_high", "rx_low", "tx_high", "tx_low",
+                      "bias_high", "bias_low", "temp_high", "temp_low")
+
+
+def evaluate_dom(entry: dict) -> None:
+    """Reavalia uma porta após seus limiares terem sido descobertos."""
+    _evaluate_dom(entry)
+
+
+def _evaluate_dom(entry: dict) -> None:
+    """Classifica a porta em ok / atenção / crítico e calcula a folga."""
+    problems = []
+    warnings = []
+
+    rx = entry["rx_power"]
+    if rx is not None:
+        if entry["rx_low"] is not None:
+            entry["margin_db"] = round(rx - entry["rx_low"], 2)
+            if rx <= entry["rx_low"]:
+                problems.append("RX abaixo do limiar")
+            elif entry["margin_db"] < DOM_WARN_MARGIN_DB:
+                warnings.append(f"RX a {entry['margin_db']:.1f} dB do piso")
+        if entry["rx_high"] is not None and rx >= entry["rx_high"]:
+            problems.append("RX acima do limiar")
+
+    tx = entry["tx_power"]
+    if tx is not None:
+        if entry["tx_low"] is not None and tx <= entry["tx_low"]:
+            problems.append("TX abaixo do limiar")
+        if entry["tx_high"] is not None and tx >= entry["tx_high"]:
+            problems.append("TX acima do limiar")
+
+    for value, low, high, label in (
+            (entry["bias"], entry["bias_low"], entry["bias_high"], "corrente"),
+            (entry["temperature"], entry["temp_low"], entry["temp_high"],
+             "temperatura")):
+        if value is None:
+            continue
+        if low is not None and value <= low:
+            problems.append(f"{label} abaixo do limiar")
+        if high is not None and value >= high:
+            problems.append(f"{label} acima do limiar")
+
+    if problems:
+        entry["status"] = "crítico"
+        entry["detail"] = "; ".join(problems)
+    elif warnings:
+        entry["status"] = "atenção"
+        entry["detail"] = "; ".join(warnings)
+    elif rx is None and tx is None:
+        entry["status"] = ""
+        entry["detail"] = ""
+    elif entry["rx_low"] is None and entry["tx_low"] is None:
+        # Sem os limiares do módulo não há como afirmar que está bom: dizer
+        # "ok" aqui seria inventar um diagnóstico. Fica explícito que falta
+        # informação, e o painel busca os limiares em segundo plano.
+        entry["status"] = "sem limiar"
+        entry["detail"] = "limiares do módulo ainda não lidos"
+    else:
+        entry["status"] = "ok"
+        entry["detail"] = ""
 
 
 # ──────────────────────────────────────────────────────────────────────────── #

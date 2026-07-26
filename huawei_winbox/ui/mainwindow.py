@@ -46,6 +46,7 @@ from .panels.services import ServicesPanel
 from .panels.snmp import SnmpPanel
 from .panels.logs import LogsPanel
 from .panels.alarms import AlarmsPanel
+from .panels.porthealth import PortHealthPanel
 from .panels.tools import ToolsPanel
 from .panels.system import SystemPanel
 from .panels.terminal import TerminalPanel
@@ -84,6 +85,7 @@ _MENU = [
     ("Vizinhos (LLDP)", LldpPanel),
     ("Serviços", ServicesPanel),
     ("SNMP", SnmpPanel),
+    ("Saúde das portas", PortHealthPanel),
     ("Alarmes", AlarmsPanel),
     ("Logs", LogsPanel),
     ("Hardware", HardwarePanel),

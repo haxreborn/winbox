@@ -280,6 +280,7 @@ _MENU_ICON = {
     "Vizinhos (LLDP)": ("route", INDIGO),
     "Serviços": ("gear", SLATE),
     "SNMP": ("antenna", GREEN),
+    "Saúde das portas": ("sliders", TEAL),
     "Alarmes": ("shield", RED),
     "Logs": ("doc", SLATE),
     "Hardware": ("chip", SLATE),
