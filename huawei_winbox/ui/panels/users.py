@@ -55,17 +55,28 @@ class UsersPanel(BasePanel):
                 values["privilege"], values["services"]))
 
     def _remove(self):
-        row = self.selected_row()
-        if not row:
-            QMessageBox.information(self, self.title, "Selecione um usuário.")
+        selected = self.require_selection("um ou mais usuários")
+        if not selected:
             return
-        if row["username"] == self.session.username:
+        # O usuário da sessão fica de fora mesmo numa seleção em massa:
+        # removê-lo derrubaria o próprio acesso no meio da operação.
+        rows = [r for r in selected if r["username"] != self.session.username]
+        if len(rows) != len(selected):
             QMessageBox.warning(
                 self, self.title,
-                "Este é o usuário da sessão atual — removê-lo derrubaria "
-                "o seu próprio acesso.")
+                f"O usuário “{self.session.username}” é o da sessão atual e "
+                "foi retirado da seleção — removê-lo derrubaria o seu "
+                "próprio acesso.")
+        if not rows:
             return
-        self.apply_commands(translator.local_user_delete(row["username"]))
+        if len(rows) > 1 and QMessageBox.question(
+                self, self.title,
+                f"Remover {len(rows)} usuários?\n\n"
+                + ", ".join(r["username"] for r in rows[:10]),
+                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+            return
+        self.apply_for_each(
+            rows, lambda r: translator.local_user_delete(r["username"]))
 
     def _change_password(self):
         row = self.selected_row()
@@ -77,7 +88,7 @@ class UsersPanel(BasePanel):
             self)
         if values and values["username"] and values["new_password"]:
             cmds = [
-                f"aaa",
+                "aaa",
                 f"local-user {values['username']} password irreversible-cipher "
                 f"{values['new_password']}",
             ]

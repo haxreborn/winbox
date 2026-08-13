@@ -54,6 +54,15 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
   | Sistema | versão, CPU, memória, uptime, renomear (`sysname`), **salvar configuração** |
   | Novo Terminal | console CLI integrado usando a mesma sessão SSH |
 
+- **Seleção múltipla em todas as tabelas**: desativar dez interfaces ou
+  dez vizinhos BGP um a um é trabalho repetido e sujeito a erro.
+  **Ctrl+clique** escolhe avulsos, **Shift+clique** escolhe uma faixa e
+  **Ctrl+A** escolhe tudo o que o filtro *Find* deixou visível; o rodapé
+  mostra quantos estão marcados. A ação vale para toda a seleção e vai ao
+  equipamento como **um bloco só** de configuração — a pré-visualização
+  mostra a lista inteira antes de qualquer envio. A seleção **sobrevive à
+  atualização** da tabela, então dá para aplicar duas ações seguidas ao
+  mesmo conjunto sem remarcar nada.
 - **Pré-visualização de CLI**: toda ação de configuração abre uma janela
   mostrando exatamente os comandos que serão executados (com `system-view`
   e `return`), com opção de copiar ou cancelar — nada é enviado sem o seu OK.

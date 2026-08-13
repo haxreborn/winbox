@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QPushButton, QMessageBox
+from PySide6.QtWidgets import QPushButton
 
 from ...core import parsers, translator
 from ..forms import SimpleForm
@@ -74,20 +74,22 @@ class NatPanel(BasePanel):
                 values["inside_ip"], values["inside_port"]))
 
     def _remove(self):
-        row = self.selected_row()
-        if not row:
-            QMessageBox.information(self, self.title, "Selecione uma regra.")
+        rows = self.require_selection("uma ou mais regras")
+        if not rows:
             return
-        raw = row["raw"]
-        if row["kind"] == "outbound":
-            self.apply_commands(translator.nat_outbound(
-                row["interface"], int(raw["acl"]), remove=True))
-            return
-        # NAT server: "current-interface/8080" ou "1.2.3.4/8080"
-        g_ip, _, g_port = raw["global"].rpartition("/")
-        i_ip, _, i_port = raw["inside"].rpartition("/")
-        if g_ip == "current-interface":
-            g_ip = ""
-        self.apply_commands(translator.nat_server(
-            row["interface"], raw["protocol"] or "tcp",
-            g_ip, int(g_port or 0), i_ip, int(i_port or 0), remove=True))
+
+        def build(row):
+            raw = row["raw"]
+            if row["kind"] == "outbound":
+                return translator.nat_outbound(row["interface"],
+                                               int(raw["acl"]), remove=True)
+            # NAT server: "current-interface/8080" ou "1.2.3.4/8080"
+            g_ip, _, g_port = raw["global"].rpartition("/")
+            i_ip, _, i_port = raw["inside"].rpartition("/")
+            if g_ip == "current-interface":
+                g_ip = ""
+            return translator.nat_server(
+                row["interface"], raw["protocol"] or "tcp",
+                g_ip, int(g_port or 0), i_ip, int(i_port or 0), remove=True)
+
+        self.apply_for_each(rows, build)

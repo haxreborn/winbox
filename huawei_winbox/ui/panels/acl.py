@@ -98,20 +98,28 @@ class AclPanel(BasePanel):
                 remove=values["remove"]))
 
     def _remove_rule(self):
-        row = self.selected_row()
-        if not row:
-            QMessageBox.information(self, self.title, "Selecione uma regra.")
-            return
-        self.apply_commands(translator.acl_rule(
-            int(row["acl"]), "", rule_id=int(row["rule"]), remove=True))
+        rows = self.require_selection("uma ou mais regras")
+        if rows:
+            self.apply_for_each(
+                rows, lambda r: translator.acl_rule(
+                    int(r["acl"]), "", rule_id=int(r["rule"]), remove=True))
 
     def _remove_acl(self):
-        row = self.selected_row()
-        if not row:
-            QMessageBox.information(self, self.title,
-                                    "Selecione uma regra da ACL a remover.")
+        rows = self.require_selection("uma regra da ACL a remover")
+        if not rows:
             return
-        self.apply_commands(translator.acl_delete(int(row["acl"])))
+        # Várias regras selecionadas podem pertencer à mesma ACL; apagar a
+        # ACL duas vezes daria erro na segunda.
+        acls = sorted({int(r["acl"]) for r in rows})
+        if QMessageBox.question(
+                self, self.title,
+                f"Remover {'a ACL' if len(acls) == 1 else 'as ACLs'} "
+                f"{', '.join(str(a) for a in acls)} por inteiro, com todas "
+                f"as suas regras?",
+                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+            return
+        self.apply_for_each([{"acl": a} for a in acls],
+                            lambda r: translator.acl_delete(r["acl"]))
 
     def _apply_iface(self):
         values = SimpleForm.ask(

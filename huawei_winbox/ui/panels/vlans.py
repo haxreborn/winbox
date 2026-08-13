@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QPushButton, QMessageBox
+from PySide6.QtWidgets import QPushButton
 
 from ...core import parsers, translator
 from ..forms import SimpleForm
@@ -64,11 +64,10 @@ class VlansPanel(BasePanel):
                 translator.vlan_batch_create(values["vlan_range"]))
 
     def _delete(self):
-        row = self.selected_row()
-        if not row:
-            QMessageBox.information(self, self.title, "Selecione uma VLAN.")
-            return
-        self.apply_commands(translator.vlan_delete(int(row["id"])))
+        rows = self.require_selection("uma ou mais VLANs")
+        if rows:
+            self.apply_for_each(
+                rows, lambda r: translator.vlan_delete(int(r["id"])))
 
     def _batch_delete(self):
         values = SimpleForm.ask(

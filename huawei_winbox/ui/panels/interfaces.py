@@ -11,7 +11,7 @@ import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QPushButton, QMessageBox, QDialog, QVBoxLayout, QGridLayout,
+    QPushButton, QDialog, QVBoxLayout, QGridLayout,
     QLabel, QDialogButtonBox, QGroupBox, QScrollArea, QWidget,
 )
 
@@ -21,6 +21,13 @@ from ..forms import SimpleForm
 from ..widgets.traffic_graph import TrafficGraphWidget, Series, series_color
 from ..worker import run_async
 from .base import BasePanel
+
+
+def _bulk_title(action: str, rows: list[dict]) -> str:
+    """Título que deixa claro sobre quantas portas a ação vai agir."""
+    if len(rows) == 1:
+        return f"{action} — {rows[0]['name']}"
+    return f"{action} — {len(rows)} interfaces selecionadas"
 
 
 class InterfaceDetailDialog(QDialog):
@@ -214,14 +221,10 @@ class InterfacesPanel(BasePanel):
 
     def _show_in_graph(self):
         """Abre o Tráfego já com as portas selecionadas marcadas."""
-        names = sorted({item.text() for item in self.table.selectedItems()
-                        if item.column() == 0})
-        if not names:
-            QMessageBox.information(
-                self, self.title,
-                "Selecione uma ou mais interfaces na tabela.")
-            return
-        self.open_panel_requested.emit("Tráfego (gráfico)", names)
+        rows = self.require_selection("uma ou mais interfaces")
+        if rows:
+            self.open_panel_requested.emit(
+                "Tráfego (gráfico)", [row["name"] for row in rows])
 
     def fetch(self):
         rows = parsers.parse_interface_description(
@@ -282,16 +285,14 @@ class InterfacesPanel(BasePanel):
         return [row["name"], row["phy"], row["protocol"],
                 row.get("rx", ""), row.get("tx", ""), row["description"]]
 
-    def _on_rows(self, rows):
-        super()._on_rows(rows)
-        # Colorir linhas de interfaces down
-        for r in range(self.table.rowCount()):
-            phy = self.table.item(r, 1)
-            if phy and "down" in phy.text().lower():
-                for c in range(self.table.columnCount()):
-                    item = self.table.item(r, c)
-                    if item:
-                        item.setForeground(Qt.darkGray)
+    def style_row(self, index, row):
+        # Interface fora do ar em cinza — legível sem chamar atenção.
+        if "down" not in str(row.get("phy", "")).lower():
+            return
+        for column in range(self.table.columnCount()):
+            item = self.table.item(index, column)
+            if item:
+                item.setForeground(Qt.darkGray)
 
     def _show_detail_from_item(self, item):
         row = item.data(Qt.UserRole)
@@ -300,29 +301,35 @@ class InterfacesPanel(BasePanel):
 
     # ----------------------------------------------------------------- #
     def _need_selection(self) -> dict | None:
-        row = self.selected_row()
-        if not row:
-            QMessageBox.information(
-                self, self.title, "Selecione uma interface na tabela.")
-        return row
+        rows = self.require_selection("uma interface")
+        return rows[0] if rows else None
 
     def _toggle(self, enable: bool):
-        row = self._need_selection()
-        if row:
-            self.apply_commands(
-                translator.interface_shutdown(row["name"], enable))
+        rows = self.require_selection("uma ou mais interfaces")
+        if rows:
+            self.apply_for_each(
+                rows, lambda r: translator.interface_shutdown(r["name"],
+                                                              enable))
 
     def _edit_description(self):
-        row = self._need_selection()
-        if not row:
+        rows = self.require_selection("uma ou mais interfaces")
+        if not rows:
             return
+        # Com uma só, o campo já vem com a descrição atual; com várias, o
+        # mesmo texto vai para todas (útil para marcar um lote como
+        # RESERVADO, por exemplo) e o título deixa isso explícito.
+        if len(rows) == 1:
+            title = f"Descrição — {rows[0]['name']}"
+            current = rows[0]["description"]
+        else:
+            title = f"Descrição — {len(rows)} interfaces"
+            current = ""
         values = SimpleForm.ask(
-            f"Descrição — {row['name']}",
-            [("description", "Descrição", "text", row["description"])],
-            self)
+            title, [("description", "Descrição", "text", current)], self)
         if values is not None:
-            self.apply_commands(translator.interface_description(
-                row["name"], values["description"]))
+            self.apply_for_each(
+                rows, lambda r: translator.interface_description(
+                    r["name"], values["description"]))
 
     def _add_ip(self):
         row = self._need_selection()
@@ -340,41 +347,46 @@ class InterfacesPanel(BasePanel):
                 remove=values["remove"]))
 
     def _set_mtu(self):
-        row = self._need_selection()
-        if not row:
+        rows = self.require_selection("uma ou mais interfaces")
+        if not rows:
             return
         values = SimpleForm.ask(
-            f"MTU — {row['name']}",
+            _bulk_title("MTU", rows),
             [("mtu", "MTU", "int", 1500)], self)
         if values and values["mtu"]:
-            self.apply_commands(
-                translator.interface_mtu(row["name"], values["mtu"]))
+            self.apply_for_each(
+                rows, lambda r: translator.interface_mtu(r["name"],
+                                                         values["mtu"]))
 
     def _speed_duplex(self):
-        row = self._need_selection()
-        if not row:
+        rows = self.require_selection("uma ou mais interfaces")
+        if not rows:
             return
         values = SimpleForm.ask(
-            f"Velocidade/Duplex — {row['name']}",
+            _bulk_title("Velocidade/Duplex", rows),
             [("speed", "Velocidade", "choice:auto|10|100|1000", "auto"),
              ("duplex", "Duplex", "choice:auto|full|half", "auto")],
             self)
         if values:
-            cmds = translator.interface_speed(row["name"], values["speed"])
-            cmds += translator.interface_duplex(row["name"], values["duplex"])
-            self.apply_commands(cmds)
+            self.apply_for_each(
+                rows,
+                lambda r: (translator.interface_speed(r["name"],
+                                                      values["speed"])
+                           + translator.interface_duplex(r["name"],
+                                                         values["duplex"])))
 
     def _portswitch(self):
-        row = self._need_selection()
-        if not row:
+        rows = self.require_selection("uma ou mais interfaces")
+        if not rows:
             return
         values = SimpleForm.ask(
-            f"Modo L2/L3 — {row['name']}",
+            _bulk_title("Modo L2/L3", rows),
             [("mode", "Modo", "choice:L2 (portswitch)|L3 (undo portswitch)", "L2 (portswitch)")],
             self)
         if values:
-            self.apply_commands(translator.interface_portswitch(
-                row["name"], to_layer2="L2" in values["mode"]))
+            self.apply_for_each(
+                rows, lambda r: translator.interface_portswitch(
+                    r["name"], to_layer2="L2" in values["mode"]))
 
     def _loopback(self):
         values = SimpleForm.ask(

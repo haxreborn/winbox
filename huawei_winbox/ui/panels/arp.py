@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QPushButton, QMessageBox
+from PySide6.QtWidgets import QPushButton
 
 from ...core import parsers, translator
 from ..forms import SimpleForm
@@ -41,10 +41,8 @@ class ArpPanel(BasePanel):
                 values["ip"], values["mac"]))
 
     def _remove_static(self):
-        row = self.selected_row()
-        if not row:
-            QMessageBox.information(self, self.title,
-                                    "Selecione uma entrada na tabela.")
-            return
-        self.apply_commands(translator.arp_static(
-            row["ip"], row["mac"], remove=True))
+        rows = self.require_selection("uma ou mais entradas")
+        if rows:
+            self.apply_for_each(
+                rows, lambda r: translator.arp_static(r["ip"], r["mac"],
+                                                      remove=True))
