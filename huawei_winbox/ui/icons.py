@@ -254,8 +254,12 @@ _DRAW = {
 
 # Cada item do menu lateral -> (desenho, cor)
 _MENU_ICON = {
+    "Painel": ("grid", BLUE),
+    "Verificação": ("shield", GREEN),
+    "Localizar": ("find", INDIGO),
     "Interfaces": ("ethernet", BLUE),
     "Tráfego (gráfico)": ("chart", GREEN),
+    "Configuração": ("doc", INDIGO),
     "Endereços IP": ("tag", TEAL),
     "VLANs": ("layers", ORANGE),
     "Tabela MAC": ("grid", PURPLE),
@@ -278,6 +282,8 @@ _MENU_ICON = {
     "Vizinhos (LLDP)": ("route", INDIGO),
     "Serviços": ("gear", SLATE),
     "SNMP": ("antenna", GREEN),
+    "Saúde das portas": ("sliders", TEAL),
+    "Alarmes": ("shield", RED),
     "Logs": ("doc", SLATE),
     "Hardware": ("chip", SLATE),
     "Ferramentas": ("wrench", SLATE),

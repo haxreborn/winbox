@@ -43,10 +43,13 @@ class MacTablePanel(BasePanel):
         flush_btn.clicked.connect(self._flush)
         layout.addWidget(flush_btn)
 
-    def refresh(self):
+    def refresh(self, *args, **kwargs):
+        # Lê os filtros AQUI (thread da UI); fetch roda no worker e não pode
+        # tocar em widgets. Os argumentos passam adiante intactos — é por
+        # eles que a BasePanel distingue clique de atualização automática.
         self._vlan_filter = self.vlan_edit.text().strip()
         self._mac_filter = self.mac_edit.text().strip()
-        super().refresh()
+        super().refresh(*args, **kwargs)
 
     def fetch(self):
         if self._mac_filter:

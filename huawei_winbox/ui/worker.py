@@ -43,9 +43,24 @@ class _Job(QRunnable):
         try:
             result = self.fn(*self.args, **self.kwargs)
         except Exception as exc:  # noqa: BLE001 — erro vai para a UI
-            self.signals.error.emit(str(exc))
+            self._emit(self.signals.error, str(exc))
         else:
-            self.signals.finished.emit(result)
+            self._emit(self.signals.finished, result)
+
+    @staticmethod
+    def _emit(signal, payload) -> None:
+        """Emite tolerando o encerramento da aplicação.
+
+        Se a janela for fechada enquanto uma consulta está em voo, o objeto
+        C++ que carrega o sinal pode já ter sido destruído quando a resposta
+        chega — emitir aí levantava "Signal source has been deleted" numa
+        thread do pool, o que só produzia um traceback solto no console.
+        Não há mais ninguém para receber o resultado: descartar é o certo.
+        """
+        try:
+            signal.emit(payload)
+        except RuntimeError:
+            pass
 
 
 # Jobs em voo — mantém o QRunnable e o _Signals vivos até a entrega.

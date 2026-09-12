@@ -26,8 +26,12 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
 
   | Módulo | O que faz |
   |---|---|
-  | Interfaces | lista (`display interface brief`), habilitar/desabilitar, descrição, IP, MTU |
-  | Tráfego (gráfico) | gráfico em tempo real de consumo de banda (RX/TX) por interface, com histórico do tempo em que a janela está aberta; fonte **CLI (SSH)** ou **SNMP** |
+  | Verificação | **este equipamento está bem?** — treze conferências (config não salva, alarmes, óptica, erros crescendo, BGP/OSPF, CPU/memória/temperatura, NTP, Telnet/SNMP padrão, reboot recente) com veredito, o que foi observado e o que fazer |
+  | Localizar | **em que porta está este cliente?** — informe o IP, o MAC (em qualquer notação) ou parte da descrição e o app encadeia ARP → tabela MAC → sessão PPPoE → rota, mostrando a porta e os comandos usados |
+  | Painel | visão geral ao vivo: CPU, memória, temperatura, banda total, ranking das portas mais carregadas, estado de BGP/OSPF/interfaces e identificação do equipamento — tudo numa janela só; também gera o **relatório HTML** do equipamento |
+  | Interfaces | lista com RX/TX ao vivo (vindos do coletor, sem consulta extra), habilitar/desabilitar, descrição, IP, MTU e **Ver no gráfico**; duplo clique abre os detalhes da porta com o gráfico dela embutido |
+  | Tráfego (gráfico) | gráfico em tempo real de **várias interfaces ao mesmo tempo**, em modo sobreposto, grade ou empilhado; fonte **SNMP** ou **CLI (SSH)** |
+  | Configuração | baixa o `display current-configuration`, navega por blocos, procura texto, **compara com a config salva** (mostra o que se perderia num reboot), guarda **histórico de cópias em disco** e compara duas datas, tira instantâneos, salva em arquivo e envia blocos colados |
   | Endereços IP | visão `display ip interface brief`, adicionar/remover IPs |
   | VLANs | criar/remover VLAN, porta em modo *access* e *trunk* |
   | Rotas | tabela de roteamento, criar/remover rotas estáticas |
@@ -41,40 +45,205 @@ e, somente após a confirmação, envia tudo ao equipamento por **SSH**.
   | ACL / Firewall | regras permit/deny, aplicar `traffic-filter` nas interfaces |
   | Firewall / NAT | editor rule-by-rule de ACL, traffic-policy (MQC: classifier/behavior/policy) e NAT, com **assistente de CGNAT** (cadeia ACL→redirect ip-nexthop→policy global) usada nos NE8000 |
   | Usuários | contas locais AAA: criar/remover, privilégio e serviços (protege o usuário da sessão) |
-  | Vizinhos (LLDP) | descoberta de equipamentos conectados, como o *Neighbors* do WinBox |
+  | Vizinhos (LLDP) | lista **e diagrama** dos equipamentos conectados, com endereço de gerência; a espessura de cada ligação acompanha o tráfego real da porta, então o uplink salta aos olhos |
   | Serviços | NTP, comunidade SNMP v2c, SSH (STelnet) e LLDP |
-  | Logs | `display logbuffer` com filtro por texto |
-  | Ferramentas | ping e traceroute executados a partir do equipamento |
+  | Saúde das portas | diagnóstico óptico (DOM) de todos os transceptores com os **limiares do próprio módulo** e a **folga em dB** até o piso, mais os erros que subiram na janela escolhida (não o acumulado desde o boot) |
+  | Alarmes | `display alarm active` — o que o equipamento está reclamando **agora**, por severidade, mais o histórico de traps; duplo clique num alarme que cita uma porta abre o gráfico dela |
+  | Logs | eventos do `display logbuffer` em tabela, coloridos por severidade, com filtro por nível/módulo/texto, contadores e modo **Acompanhar** que destaca o que chegou de novo |
+  | Ferramentas | ping, **ping contínuo com gráfico de latência** (perdas marcadas em vermelho, variação/jitter) e traceroute em tabela — tudo executado a partir do equipamento, com origem e VRF opcionais |
   | Sistema | versão, CPU, memória, uptime, renomear (`sysname`), **salvar configuração** |
   | Novo Terminal | console CLI integrado usando a mesma sessão SSH |
 
+- **Seleção múltipla em todas as tabelas**: desativar dez interfaces ou
+  dez vizinhos BGP um a um é trabalho repetido e sujeito a erro.
+  **Ctrl+clique** escolhe avulsos, **Shift+clique** escolhe uma faixa e
+  **Ctrl+A** escolhe tudo o que o filtro *Find* deixou visível; o rodapé
+  mostra quantos estão marcados. A ação vale para toda a seleção e vai ao
+  equipamento como **um bloco só** de configuração — a pré-visualização
+  mostra a lista inteira antes de qualquer envio. A seleção **sobrevive à
+  atualização** da tabela, então dá para aplicar duas ações seguidas ao
+  mesmo conjunto sem remarcar nada.
 - **Pré-visualização de CLI**: toda ação de configuração abre uma janela
   mostrando exatamente os comandos que serão executados (com `system-view`
   e `return`), com opção de copiar ou cancelar — nada é enviado sem o seu OK.
 - **Tudo assíncrono**: as consultas SSH rodam em threads; a janela nunca
   congela.
+- **Busca global (Ctrl+K)**: com mais de trinta módulos, digitar é mais
+  rápido que procurar no menu. A busca casa por subsequência e ignora
+  acento — `trfg` acha *Tráfego (gráfico)*, `cfg` acha *Configuração* — e
+  também encontra ações (salvar configuração, organizar janelas, Safe Mode).
+- **Histórico de configurações em disco**: a cada conexão o módulo
+  *Configuração* guarda uma cópia datada em
+  `~/.huaweibox/backups/<equipamento>/`. Cópias idênticas à anterior não
+  geram arquivo novo, então conectar dez vezes num equipamento parado não
+  cria dez cópias iguais. Em *Histórico…* dá para abrir qualquer cópia
+  antiga, comparar duas datas ou comparar uma delas com a configuração de
+  agora — que é como se descobre o que mudou entre ontem e hoje.
+- **O ambiente volta como você deixou**: ao reconectar no mesmo
+  equipamento, as janelas que estavam abertas reabrem no mesmo lugar e
+  tamanho, as interfaces marcadas no gráfico voltam marcadas (com o mesmo
+  modo de exibição e janela de tempo) e a comunidade SNMP já vem
+  preenchida. Fica em `~/.huaweibox/workspace.json`, por endereço do
+  equipamento e **sem nenhuma senha**.
 
-## Gráfico de tráfego e SNMP
+## Gráfico de tráfego: várias interfaces ao mesmo tempo
 
-O módulo **Tráfego (gráfico)** desenha o consumo de banda (RX/TX) da
-interface escolhida enquanto a janela fica aberta — um gráfico estilo
-*Traffic* do WinBox, com escala automática e legenda de valor atual/pico.
-O histórico fica em memória (vinculado à sessão) e sobrevive ao fechar e
-reabrir o painel. Há duas fontes de dados:
+O módulo **Tráfego (gráfico)** acompanha quantas portas você quiser de uma
+vez. A lista da esquerda marca as interfaces (com filtro, "Ativas" e
+"Top 8") e mostra RX/TX/pico de cada uma ao vivo; o quadradinho colorido
+liga cada linha do gráfico à sua porta. Três formas de olhar:
 
-- **CLI (SSH)** — lê a taxa que o próprio equipamento informa
-  (`display interface <nome>`). Funciona sem nenhuma configuração extra
-  além do SSH.
-- **SNMP** — lê os contadores de octetos (`ifHCInOctets`/`ifHCOutOctets`,
-  com queda para os de 32 bits) e calcula a taxa entre as amostras. **Exige
-  que o agente SNMP já esteja habilitado no equipamento** (use o módulo
-  *SNMP* para isso); a comunidade e a porta são informadas no próprio
-  painel, e o botão **Testar SNMP** confirma o acesso lendo `sysName`,
-  `sysUpTime` e `sysDescr`.
+| Exibição | Para quê |
+|---|---|
+| **Sobreposto** | todas no mesmo eixo — comparar quem consome mais |
+| **Grade** | um mini-gráfico por porta, no mesmo eixo de tempo — varrer muitas portas sem as linhas se embolarem |
+| **Empilhado** | áreas somadas — ver a composição do tráfego total |
+
+Passando o mouse, uma linha vertical mostra o valor de **todas** as séries
+naquele mesmo instante. Dá para congelar o desenho (a coleta continua por
+trás), escolher a janela de tempo (30 s a "tudo"), ver só RX ou só TX e
+exportar o histórico em CSV.
+
+**Marcar mais interfaces não aumenta a carga sobre o equipamento**: cada
+amostra já traz todas as portas.
+
+### Fontes de dados
+
+- **SNMP** (recomendada) — lê os contadores de octetos de **todas** as
+  interfaces com **GET-BULK**: uma placa de 48 portas cabe em 2 ou 3
+  pacotes UDP, contra ~150 idas e voltas do GET-NEXT. É barato o bastante
+  para amostrar de segundo em segundo, e a taxa é calculada aqui
+  (diferença de octetos ÷ tempo), então o valor é o **instantâneo** de
+  verdade. Prefere `ifHCInOctets`/`ifHCOutOctets` (64 bits), cai para os de
+  32 bits, e trata a volta do contador sem inventar picos. **Exige o agente
+  SNMP habilitado** (use o módulo *SNMP* para isso).
+- **CLI (SSH)** — sem agente SNMP, um único `display interface brief` traz
+  a utilização de todas as portas; a banda nominal, lida uma vez do dump
+  completo, converte porcentagem em bits/s. Continua sendo **um comando por
+  amostra**, independente de quantas portas estejam sendo observadas. A
+  taxa que o VRP informa é média de 300 s, então é mais suave que a do SNMP.
+- **Automático** (padrão) — tenta SNMP e cai para a CLI sozinho.
+
+A comunidade e a porta ficam no próprio painel (ou em
+*Configurações → Comunidade SNMP*), e **Testar SNMP** confirma o acesso
+lendo `sysName`, `sysUpTime`, `sysDescr` e a contagem de interfaces.
 
 O cliente SNMP v2c é implementado internamente (codificação BER própria),
 então **não há dependências novas** — o projeto continua usando apenas
 PySide6 e paramiko.
+
+## Topologia: onde este equipamento está pendurado
+
+O *Neighbors* do WinBox é uma lista, e uma lista responde *quem* está
+conectado. O módulo **Vizinhos (LLDP)** ganhou uma aba de **diagrama**, que
+responde a pergunta que se faz ao abrir uma caixa pela primeira vez: como
+ela está no meio da rede.
+
+O equipamento fica no centro e os vizinhos em volta, cada um com o nome, o
+endereço de gerência e a porta remota. A **espessura de cada ligação
+acompanha o tráfego real da porta local**, então o uplink de verdade salta
+aos olhos no meio dos links de acesso; portas fora do ar aparecem
+tracejadas. Um vizinho ligado por várias portas (agregação) vira uma caixa
+só, com todas as ligações contadas. Clicar numa ligação abre o gráfico
+daquela porta.
+
+O arranjo calcula o raio de que precisa para as caixas não se
+sobreporem — com muitos vizinhos o desenho cresce e a área rola, em vez de
+espremer tudo. Testado até 14 vizinhos.
+
+## Verificação: este equipamento está bem?
+
+O aplicativo já sabia ler alarmes, óptica, erros de porta, BGP, OSPF e a
+diferença entre a configuração em execução e a salva. O módulo
+**Verificação** junta tudo numa resposta única — a que se quer ao assumir
+um plantão ou ao terminar uma manutenção.
+
+São treze conferências, ordenadas da mais grave para a menos, cada uma com
+o que foi observado e **o que fazer** a respeito; duplo clique abre o
+painel onde o assunto se resolve, e *Copiar resultado* gera um texto
+pronto para a passagem de turno.
+
+Duas decisões importam aqui. Primeiro, **`n/d` é um veredito de primeira
+classe**: se o equipamento não expõe o dado, o painel diz que não sabe em
+vez de dizer que está tudo bem. Segundo, os limiares são **conservadores
+de propósito** — placa de rede trabalha entre 40 e 65 °C e o alarme do
+próprio equipamento fica em 80–90 °C, então marcar falha em 75 encheria a
+lista de alarme falso, que é o jeito mais rápido de fazer alguém parar de
+olhar a verificação.
+
+## Relatório do equipamento em um clique
+
+*Painel → Gerar relatório…* (ou `Ctrl+K` → "relatório") produz um arquivo
+**HTML autocontido** — sem CSS externo, sem imagem, sem script — com o
+retrato do equipamento: identificação e tempo ligado, carga, alarmes
+ativos, diagnóstico óptico com a folga de cada porta, tabela de interfaces
+com uso e descrição, vizinhos LLDP e o estado de BGP/OSPF. Opcionalmente
+anexa a configuração completa.
+
+Abre em qualquer navegador, imprime bem e serve tanto para anexar num
+chamado quanto para guardar como registro da manutenção. A coleta é só
+leitura: nada é alterado no equipamento para produzir o relatório.
+
+## Localizar: em que porta está este cliente
+
+O suporte recebe um IP ou um MAC e precisa achar a porta. À mão são três
+ou quatro comandos e um cruzamento mental; aqui é uma busca só. O
+aplicativo **encadeia** as consultas — o ARP dá o MAC, a tabela MAC dá a
+porta física, o BRAS dá a sessão PPPoE e a rota diz por onde o tráfego sai
+— e ordena os achados por utilidade: a tabela MAC aponta onde o
+dispositivo realmente está, o ARP costuma apontar a interface lógica.
+
+O MAC pode ser colado em qualquer notação (`00:e0:fc:12:34:56`,
+`00-E0-FC-12-34-56`, `00e0fc123456`); o aplicativo converte para a forma
+do VRP. Dos resultados dá para pular direto ao gráfico da porta ou à lista
+de interfaces, e o botão *Copiar resumo* gera um texto pronto para colar
+num chamado. Os comandos executados ficam à vista, como no resto do app.
+
+## Saúde das portas: qual fibra vai cair primeiro
+
+O módulo **Saúde das portas** responde duas perguntas do dia a dia que
+nenhuma tela do equipamento responde direto.
+
+**Óptica.** Lista o diagnóstico (DOM) de todos os transceptores junto com
+os **limiares do próprio módulo**. Um número solto não diz nada — −24 dBm
+é ruim num módulo cujo piso é −14 e perfeitamente normal num de −28 — por
+isso a coluna que importa é a **folga**: quantos dB ainda faltam para o
+piso. Abaixo de 3 dB a porta já entra em *atenção*, antes de qualquer
+alarme disparar. Quando o equipamento só devolve a tabela (sem limiares),
+o aplicativo os aprende porta a porta em segundo plano, em lotes pequenos
+e uma única vez — limiar é propriedade do módulo, não medição.
+
+**Erros.** Mostra quanto os contadores subiram **na janela escolhida**, e
+não o acumulado desde o boot: cinco milhões de erros de três anos atrás é
+ruído, duzentos no último minuto é incêndio. Os contadores saem do mesmo
+`display interface brief` que a telemetria já executa (ou da IF-MIB, com
+SNMP), então acompanhar isso não custa consulta nenhuma a mais.
+
+## Como o app se mantém responsivo com muitas janelas abertas
+
+O VRP atende **um** comando por vez em cada sessão SSH. Com várias janelas
+em auto-atualização, o antigo "quem chegar primeiro" fazia um
+`display interface` demorado segurar a fila inteira — e era isso que fazia
+o gráfico engasgar. Agora todo acesso passa por uma fila única
+(`core/scheduler.py`) com quatro mecanismos:
+
+- **prioridade** — um clique seu fura a fila das atualizações de fundo;
+- **coalescência** — dois painéis pedindo o mesmo `display` ao mesmo tempo
+  executam **um** comando e recebem os dois a mesma resposta;
+- **cache curto** — saídas de `display` valem alguns segundos, então um
+  painel a cada 5 s e outro a cada 10 s dividem a mesma leitura;
+- **descarte de pedidos vencidos** — uma atualização de fundo que passou
+  tempo demais na fila é jogada fora em vez de executada; quando ela
+  finalmente rodasse, o painel já teria pedido a próxima.
+
+Além disso, **um só coletor** (`core/telemetry.py`) alimenta o gráfico, o
+Painel e os indicadores da barra — antes cada um consultava o equipamento
+por conta própria. Quando nenhuma janela de tráfego está aberta, ele
+acompanha apenas CPU e memória.
+
+A barra de status mostra o estado da fila (pedidos pendentes, consultas
+evitadas pelo cache/coalescência e descartes), então dá para ver a coisa
+funcionando.
 
 ## Instalação
 
@@ -92,10 +261,16 @@ python -m huawei_winbox.main
 
 1. Informe o IP, usuário e senha do equipamento Huawei (SSH habilitado com
    `stelnet server enable` e usuário com `service-type ssh`).
-2. Clique em **Conectar**.
-3. Use o menu lateral para abrir os módulos; cada configuração mostra o CLI
+2. Clique em **Conectar**. A janela abre no **Painel**, com a visão geral
+   do equipamento.
+3. Para o gráfico em tempo real de verdade, habilite o agente SNMP (módulo
+   **SNMP**) e informe a comunidade em *Configurações → Comunidade SNMP*
+   ou no próprio painel de Tráfego. Sem SNMP tudo funciona igual, só com a
+   taxa suavizada que a CLI informa.
+4. Use o menu lateral para abrir os módulos; cada configuração mostra o CLI
    gerado antes de aplicar.
-4. Ao final, use **Sistema → Salvar configuração** para gravar (`save`).
+5. Ao final, use **Sistema → Salvar configuração** para gravar (`save`) —
+   ou confira antes no módulo **Configuração** o que está pendente.
 
 ## Estrutura do código
 
@@ -104,21 +279,37 @@ huawei_winbox/
 ├── main.py                  # ponto de entrada
 ├── core/
 │   ├── session.py           # sessão SSH persistente (paramiko) com o VRP
+│   ├── scheduler.py         # fila de comandos: prioridade, cache, descarte
+│   ├── telemetry.py         # coletor único de métricas em tempo real
 │   ├── translator.py        # cliques -> comandos CLI do VRP
 │   ├── parsers.py           # saída dos "display ..." -> tabelas
-│   ├── snmp.py              # cliente SNMP v2c próprio (BER) — só leitura
-│   ├── history.py           # histórico de tráfego em memória (por sessão)
+│   ├── snmp.py              # cliente SNMP v2c próprio (BER, GET-BULK) — só leitura
+│   ├── history.py           # séries temporais em memória (por sessão)
+│   ├── workspace.py         # layout e preferências por equipamento
+│   ├── backup.py            # histórico de configurações em disco
+│   ├── locate.py            # busca encadeada IP → MAC → porta
+│   ├── report.py            # relatório HTML autocontido
+│   ├── healthcheck.py       # conferências de saúde do equipamento
 │   └── profiles.py          # equipamentos salvos (~/.huaweibox)
 └── ui/
     ├── login.py             # tela de conexão estilo WinBox
     ├── mainwindow.py        # menu lateral + área MDI
+    ├── palette.py           # busca global (Ctrl+K)
     ├── command_preview.py   # pré-visualização do CLI antes do envio
     ├── forms.py             # formulários genéricos
     ├── worker.py            # execução SSH fora da thread da UI
     ├── style.py             # tema visual (QSS)
-    ├── widgets/             # widgets reutilizáveis (gráfico de tráfego)
-    └── panels/              # Interfaces, Tráfego, VLANs, BGP, OSPF, MPLS...
+    ├── widgets/             # gráfico multi-série, sparklines e topologia (QPainter)
+    └── panels/              # Painel, Interfaces, Tráfego, Configuração, BGP...
 ```
+
+### Onde os dados ficam
+
+O histórico vive em memória, vinculado à sessão (`WeakKeyDictionary`), e
+sobrevive ao fechar/reabrir os painéis. São ~5400 amostras por série
+(90 min a 1 s, 7h30 a 5 s) guardadas em `array('d')` circular: 48 portas
+ocupam cerca de 6 MB. Nada é gravado em disco — para levar embora, use
+*CSV…* no gráfico ou *Salvar em arquivo…* na Configuração.
 
 ## Avisos
 
@@ -139,4 +330,9 @@ huawei_winbox/
 - A opção "Lembrar senha" grava a senha apenas ofuscada (base64) no disco;
   em ambientes sensíveis, deixe desmarcada.
 - Configurações aplicadas **não são gravadas na flash automaticamente** —
-  use *Salvar configuração* no módulo Sistema.
+  use *Salvar configuração* no módulo Sistema. O módulo **Configuração**
+  tem o botão *Comparar com a salva*, que lista exatamente o que ainda
+  está só na memória e se perderia num reboot.
+- O painel **Configuração** também vigia alterações: marque um instantâneo
+  e escolha um intervalo em *Vigiar mudanças* para ser avisado quando a
+  configuração mudar — inclusive por outra pessoa, em outra sessão.

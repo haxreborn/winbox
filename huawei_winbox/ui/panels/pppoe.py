@@ -36,7 +36,10 @@ def _table(columns: list[str]) -> QTableWidget:
     t = QTableWidget(0, len(columns))
     t.setHorizontalHeaderLabels(columns)
     t.setSelectionBehavior(QTableWidget.SelectRows)
-    t.setSelectionMode(QTableWidget.SingleSelection)
+    # Seleção múltipla: desconectar dez assinantes ou apagar dez
+    # regras um a um é trabalho repetido. Ctrl+clique, Shift+clique
+    # e Ctrl+A funcionam como em qualquer lista.
+    t.setSelectionMode(QTableWidget.ExtendedSelection)
     t.setEditTriggers(QTableWidget.NoEditTriggers)
     t.setAlternatingRowColors(True)
     t.verticalHeader().setVisible(False)
@@ -346,11 +349,14 @@ class PppoePanel(QWidget):
                 then=self.refresh_pools)
 
     def _remove_pool(self):
-        row = self._selected(self.pool_table, self._pool_rows)
-        if row:
-            self._apply(translator.bras_ip_pool(
-                row["name"], "", "", "", "", remove=True),
-                then=self.refresh_pools)
+        rows = self._selected_many(self.pool_table, self._pool_rows)
+        if not rows:
+            return
+        commands = []
+        for row in rows:
+            commands += translator.bras_ip_pool(row["name"], "", "", "", "",
+                                                remove=True)
+        self._apply(commands, then=self.refresh_pools)
 
     # ================================================================== #
     # Aba: PPPoE Server
@@ -447,6 +453,23 @@ class PppoePanel(QWidget):
     def _fail(self, message: str):
         self._set_busy(False, "")
         QMessageBox.warning(self, self.title, message)
+
+    def _selected_many(self, table: QTableWidget,
+                       rows: list[dict]) -> list[dict]:
+        """Todas as linhas selecionadas (a seleção da tabela é múltipla).
+
+        ``selectedItems()`` devolve células; a mesma linha volta uma vez
+        por coluna, então é preciso reduzir por índice de linha.
+        """
+        indexes = sorted({table.row(item) for item in table.selectedItems()})
+        chosen = [rows[i] for i in indexes if 0 <= i < len(rows)]
+        if not chosen:
+            QMessageBox.information(
+                self, self.title,
+                "Selecione uma ou mais linhas na tabela.\n\n"
+                "Ctrl+clique escolhe avulsas, Shift+clique escolhe uma "
+                "faixa e Ctrl+A escolhe todas.")
+        return chosen
 
     def _selected(self, table: QTableWidget, rows: list[dict]) -> dict | None:
         items = table.selectedItems()

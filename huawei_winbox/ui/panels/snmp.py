@@ -24,7 +24,10 @@ def _table(columns: list[str]) -> QTableWidget:
     t = QTableWidget(0, len(columns))
     t.setHorizontalHeaderLabels(columns)
     t.setSelectionBehavior(QTableWidget.SelectRows)
-    t.setSelectionMode(QTableWidget.SingleSelection)
+    # Seleção múltipla: desconectar dez assinantes ou apagar dez
+    # regras um a um é trabalho repetido. Ctrl+clique, Shift+clique
+    # e Ctrl+A funcionam como em qualquer lista.
+    t.setSelectionMode(QTableWidget.ExtendedSelection)
     t.setEditTriggers(QTableWidget.NoEditTriggers)
     t.setAlternatingRowColors(True)
     t.verticalHeader().setVisible(False)
@@ -259,10 +262,14 @@ class SnmpPanel(QWidget):
                 values["community"], write=values["write"]))
 
     def _remove_community(self):
-        row = self._selected_row(self.comm_table, self._comm_rows)
-        if row:
-            self._apply(translator.snmp_add_community(
-                row["name"], write=(row["access"] == "write"), remove=True))
+        rows = self._selected_many(self.comm_table, self._comm_rows)
+        if not rows:
+            return
+        commands = []
+        for row in rows:
+            commands += translator.snmp_add_community(
+                row["name"], write=(row["access"] == "write"), remove=True)
+        self._apply(commands)
 
     def _add_trap(self):
         values = SimpleForm.ask(
@@ -278,12 +285,33 @@ class SnmpPanel(QWidget):
                 values["udp_port"], values["version"]))
 
     def _remove_trap(self):
-        row = self._selected_row(self.trap_table, self._trap_rows)
-        if row:
-            self._apply(translator.snmp_add_trap_host(
-                row["address"], row["community"], remove=True))
+        rows = self._selected_many(self.trap_table, self._trap_rows)
+        if not rows:
+            return
+        commands = []
+        for row in rows:
+            commands += translator.snmp_add_trap_host(
+                row["address"], row["community"], remove=True)
+        self._apply(commands)
 
     # ------------------------------------------------------------------ #
+    def _selected_many(self, table: QTableWidget,
+                       rows: list[dict]) -> list[dict]:
+        """Todas as linhas selecionadas (a seleção da tabela é múltipla).
+
+        ``selectedItems()`` devolve células; a mesma linha volta uma vez
+        por coluna, então é preciso reduzir por índice de linha.
+        """
+        indexes = sorted({table.row(item) for item in table.selectedItems()})
+        chosen = [rows[i] for i in indexes if 0 <= i < len(rows)]
+        if not chosen:
+            QMessageBox.information(
+                self, self.title,
+                "Selecione uma ou mais linhas na tabela.\n\n"
+                "Ctrl+clique escolhe avulsas, Shift+clique escolhe uma "
+                "faixa e Ctrl+A escolhe todas.")
+        return chosen
+
     def _selected_row(self, table: QTableWidget, rows: list[dict]) -> dict | None:
         items = table.selectedItems()
         if not items:

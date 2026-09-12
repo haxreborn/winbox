@@ -53,12 +53,14 @@ class RoutesPanel(BasePanel):
         del_btn.clicked.connect(self._remove_static)
         layout.addWidget(del_btn)
 
-    def refresh(self):
+    def refresh(self, *args, **kwargs):
         # Captura o estado dos widgets AQUI (thread da UI) — fetch roda
-        # no worker e não pode tocar em widgets Qt.
+        # no worker e não pode tocar em widgets Qt. Os argumentos seguem
+        # intactos: é por eles que a BasePanel sabe se é clique ou
+        # atualização automática.
         self._mode = self.proto_combo.currentText()
         self._query = self.search_edit.text().strip()
-        super().refresh()
+        super().refresh(*args, **kwargs)
 
     def fetch(self):
         self._truncated = False
@@ -126,12 +128,28 @@ class RoutesPanel(BasePanel):
                 description=values["description"]))
 
     def _remove_static(self):
-        row = self.selected_row()
-        if not row or row["proto"].lower() != "static":
+        selected = self.require_selection("uma ou mais rotas estáticas")
+        if not selected:
+            return
+        # Só rotas estáticas podem ser removidas por comando; as aprendidas
+        # por protocolo somem sozinhas quando a origem cai. Selecionar a
+        # tabela inteira e mandar remover deve apagar as estáticas e ignorar
+        # o resto, não recusar tudo.
+        rows = [r for r in selected if r["proto"].lower() == "static"]
+        ignored = len(selected) - len(rows)
+        if not rows:
             QMessageBox.information(
                 self, self.title,
-                "Selecione uma rota do tipo Static para remover.")
+                "Nenhuma das linhas selecionadas é uma rota estática — "
+                "rotas aprendidas por protocolo não se removem à mão.")
             return
-        destination, prefix = row["destination"].split("/", 1)
-        self.apply_commands(translator.static_route(
-            destination, prefix, row["nexthop"], remove=True))
+        if ignored:
+            self.status_label.setText(
+                f"{ignored} rota(s) não estática(s) foram ignoradas")
+
+        def build(row):
+            destination, prefix = row["destination"].split("/", 1)
+            return translator.static_route(destination, prefix,
+                                           row["nexthop"], remove=True)
+
+        self.apply_for_each(rows, build)

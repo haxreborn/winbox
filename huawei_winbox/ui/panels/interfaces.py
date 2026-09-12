@@ -7,33 +7,67 @@ porta (velocidade, duplex, negociação, potência ótica, contadores).
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+import time
+
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QPushButton, QMessageBox, QDialog, QVBoxLayout, QGridLayout,
+    QPushButton, QDialog, QVBoxLayout, QGridLayout,
     QLabel, QDialogButtonBox, QGroupBox, QScrollArea, QWidget,
 )
 
-from ...core import parsers, translator
+from ...core import history as history_mod
+from ...core import parsers, telemetry, translator
 from ..forms import SimpleForm
+from ..widgets.traffic_graph import TrafficGraphWidget, Series, series_color
 from ..worker import run_async
 from .base import BasePanel
 
 
-class InterfaceDetailDialog(QDialog):
-    """Diálogo com detalhes completos da porta (double-click)."""
+def _bulk_title(action: str, rows: list[dict]) -> str:
+    """Título que deixa claro sobre quantas portas a ação vai agir."""
+    if len(rows) == 1:
+        return f"{action} — {rows[0]['name']}"
+    return f"{action} — {len(rows)} interfaces selecionadas"
 
-    def __init__(self, iface_name: str, info: dict, parent=None):
+
+class InterfaceDetailDialog(QDialog):
+    """Diálogo com detalhes completos da porta (double-click).
+
+    Junta num lugar só o que estava espalhado: estado, camada física,
+    diagnóstico do módulo óptico, contadores — e o **gráfico ao vivo** da
+    própria porta, alimentado pelo coletor que já está amostrando. Não
+    custa nenhuma consulta extra ao equipamento.
+    """
+
+    def __init__(self, iface_name: str, info: dict, parent=None,
+                 history=None):
         super().__init__(parent)
         self.setWindowTitle(f"Detalhes — {iface_name}")
-        self.resize(580, 480)
+        self.resize(620, 620)
+        self._iface = iface_name
+        self._history = history
         root = QVBoxLayout(self)
+
+        # ── Gráfico ao vivo da porta ── #
+        self._graph = None
+        if history is not None and history.series(iface_name) is not None:
+            self._graph = TrafficGraphWidget()
+            self._graph.setMinimumHeight(150)
+            self._graph.setMaximumHeight(190)
+            self._graph.set_window(300)
+            self._graph.set_title(f"Banda de {iface_name} — últimos 5 min")
+            root.addWidget(self._graph)
+            self._timer = QTimer(self)
+            self._timer.timeout.connect(self._update_graph)
+            self._timer.start(1000)
+            self._update_graph()
 
         # Área rolável para caber em todas as telas
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         content = QWidget()
         scroll.setWidget(content)
-        root.addWidget(scroll)
+        root.addWidget(scroll, 1)
         layout = QVBoxLayout(content)
         layout.setSpacing(6)
 
@@ -115,18 +149,43 @@ class InterfaceDetailDialog(QDialog):
         layout.addStretch(1)
 
         btns = QDialogButtonBox(QDialogButtonBox.Close)
+        btns.button(QDialogButtonBox.Close).setText("Fechar")
         btns.rejected.connect(self.reject)
         root.addWidget(btns)
+
+    def _update_graph(self) -> None:
+        if self._graph is None or self._history is None:
+            return
+        samples = self._history.samples(self._iface, time.time() - 300, 600)
+        if not samples:
+            return
+        self._graph.set_series([Series(
+            key=self._iface, label=self._iface,
+            color=series_color(0), samples=samples)])
 
 
 class InterfacesPanel(BasePanel):
     title = "Interfaces"
     columns = ["Interface", "Físico", "Protocolo", "RX", "TX", "Descrição"]
 
+    # Pedido de abrir outro módulo (a MainWindow conecta se existir).
+    open_panel_requested = Signal(str, object)
+
     def __init__(self, session, parent=None):
+        # O coletor precisa existir ANTES do super().__init__(), que já
+        # dispara o primeiro fetch().
+        self.engine = telemetry.for_session(session)
+        self._rates_generation = -1
         super().__init__(session, parent)
         # Conecta uma única vez — não em _on_rows, que roda a cada refresh.
         self.table.itemDoubleClicked.connect(self._show_detail_from_item)
+        self.engine.acquire_traffic("interfaces-panel")
+        self.engine.start()
+        # As colunas RX/TX passam a andar sozinhas, lendo o retrato em
+        # memória: banda ao vivo sem custar uma consulta sequer.
+        self._rate_timer = QTimer(self)
+        self._rate_timer.timeout.connect(self._update_rates)
+        self._rate_timer.start(1000)
 
     def build_toolbar(self, layout):
         for text, slot in [
@@ -141,51 +200,99 @@ class InterfacesPanel(BasePanel):
             ("Eth-Trunk...", self._eth_trunk),
             ("Sub-interface...", self._subinterface),
             ("Detalhes", self._show_detail),
+            ("Ver no gráfico", self._show_in_graph),
         ]:
             btn = QPushButton(text)
             btn.clicked.connect(slot)
             layout.addWidget(btn)
 
+    def focus_payload(self, payload) -> None:
+        """Filtra a tabela numa porta pedida por outro painel."""
+        name = payload[0] if isinstance(payload, (list, tuple)) else payload
+        if not name:
+            return
+        self.find_edit.setText(str(name))
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is not None and item.text() == str(name):
+                self.table.selectRow(row)
+                self.table.scrollToItem(item)
+                break
+
+    def _show_in_graph(self):
+        """Abre o Tráfego já com as portas selecionadas marcadas."""
+        rows = self.require_selection("uma ou mais interfaces")
+        if rows:
+            self.open_panel_requested.emit(
+                "Tráfego (gráfico)", [row["name"] for row in rows])
+
     def fetch(self):
         rows = parsers.parse_interface_description(
             self.session.run("display interface description"))
-        # RX/TX: banda real (bits/sec convertidos para Mbps/Gbps) lida do
-        # dump completo "display interface" — um único comando para todas
-        # as portas. Se falhar, cai para o percentual do "brief".
-        util: dict = {}
-        try:
-            util = parsers.parse_interface_rates(
-                self.session.run("display interface", timeout=60.0))
-        except Exception:
-            pass
-        if not util:
+        # RX/TX vêm do coletor, que já amostra todas as portas — antes esta
+        # tabela baixava o dump completo do "display interface" (dezenas de
+        # segundos numa placa cheia) a cada atualização, e era o comando
+        # mais caro do aplicativo. Só se o coletor ainda não tiver dados é
+        # que se busca algo, e aí o "brief", que é barato.
+        rates = self.engine.snapshot()["rates"]
+        if not rates:
             try:
                 brief = parsers.parse_interface_brief(
-                    self.session.run("display interface brief"))
-                util = {b["name"]: (b["in_util"], b["out_util"])
-                        for b in brief}
-            except Exception:
+                    self.session.run("display interface brief", timeout=30.0))
+                for row in brief:
+                    row_name = row["name"]
+                    rows_by_name = {r["name"]: r for r in rows}
+                    if row_name in rows_by_name:
+                        rows_by_name[row_name]["rx"] = row["in_util"]
+                        rows_by_name[row_name]["tx"] = row["out_util"]
+            except Exception:                # noqa: BLE001 — coluna opcional
                 pass
+            for r in rows:
+                r.setdefault("rx", "")
+                r.setdefault("tx", "")
+            return rows
         for r in rows:
-            rx, tx = util.get(r["name"], ("", ""))
-            r["rx"] = rx
-            r["tx"] = tx
+            pair = rates.get(r["name"])
+            r["rx"] = parsers.format_bps(pair[0]) if pair else ""
+            r["tx"] = parsers.format_bps(pair[1]) if pair else ""
         return rows
+
+    # ------------------------------------------------------------------ #
+    def _update_rates(self) -> None:
+        """Atualiza só as colunas RX/TX a partir do coletor (sem I/O)."""
+        if not self.isVisible() or self._busy:
+            return
+        snapshot = self.engine.snapshot()
+        if snapshot["generation"] == self._rates_generation:
+            return
+        self._rates_generation = snapshot["generation"]
+        rates = snapshot["rates"]
+        if not rates:
+            return
+        for row in range(self.table.rowCount()):
+            name_item = self.table.item(row, 0)
+            if name_item is None:
+                continue
+            pair = rates.get(name_item.text())
+            if pair is None:
+                continue
+            for column, value in ((3, pair[0]), (4, pair[1])):
+                item = self.table.item(row, column)
+                if item is not None:
+                    item.setText(parsers.format_bps(value))
 
     def row_values(self, row):
         return [row["name"], row["phy"], row["protocol"],
                 row.get("rx", ""), row.get("tx", ""), row["description"]]
 
-    def _on_rows(self, rows):
-        super()._on_rows(rows)
-        # Colorir linhas de interfaces down
-        for r in range(self.table.rowCount()):
-            phy = self.table.item(r, 1)
-            if phy and "down" in phy.text().lower():
-                for c in range(self.table.columnCount()):
-                    item = self.table.item(r, c)
-                    if item:
-                        item.setForeground(Qt.darkGray)
+    def style_row(self, index, row):
+        # Interface fora do ar em cinza — legível sem chamar atenção.
+        if "down" not in str(row.get("phy", "")).lower():
+            return
+        for column in range(self.table.columnCount()):
+            item = self.table.item(index, column)
+            if item:
+                item.setForeground(Qt.darkGray)
 
     def _show_detail_from_item(self, item):
         row = item.data(Qt.UserRole)
@@ -194,29 +301,35 @@ class InterfacesPanel(BasePanel):
 
     # ----------------------------------------------------------------- #
     def _need_selection(self) -> dict | None:
-        row = self.selected_row()
-        if not row:
-            QMessageBox.information(
-                self, self.title, "Selecione uma interface na tabela.")
-        return row
+        rows = self.require_selection("uma interface")
+        return rows[0] if rows else None
 
     def _toggle(self, enable: bool):
-        row = self._need_selection()
-        if row:
-            self.apply_commands(
-                translator.interface_shutdown(row["name"], enable))
+        rows = self.require_selection("uma ou mais interfaces")
+        if rows:
+            self.apply_for_each(
+                rows, lambda r: translator.interface_shutdown(r["name"],
+                                                              enable))
 
     def _edit_description(self):
-        row = self._need_selection()
-        if not row:
+        rows = self.require_selection("uma ou mais interfaces")
+        if not rows:
             return
+        # Com uma só, o campo já vem com a descrição atual; com várias, o
+        # mesmo texto vai para todas (útil para marcar um lote como
+        # RESERVADO, por exemplo) e o título deixa isso explícito.
+        if len(rows) == 1:
+            title = f"Descrição — {rows[0]['name']}"
+            current = rows[0]["description"]
+        else:
+            title = f"Descrição — {len(rows)} interfaces"
+            current = ""
         values = SimpleForm.ask(
-            f"Descrição — {row['name']}",
-            [("description", "Descrição", "text", row["description"])],
-            self)
+            title, [("description", "Descrição", "text", current)], self)
         if values is not None:
-            self.apply_commands(translator.interface_description(
-                row["name"], values["description"]))
+            self.apply_for_each(
+                rows, lambda r: translator.interface_description(
+                    r["name"], values["description"]))
 
     def _add_ip(self):
         row = self._need_selection()
@@ -234,41 +347,46 @@ class InterfacesPanel(BasePanel):
                 remove=values["remove"]))
 
     def _set_mtu(self):
-        row = self._need_selection()
-        if not row:
+        rows = self.require_selection("uma ou mais interfaces")
+        if not rows:
             return
         values = SimpleForm.ask(
-            f"MTU — {row['name']}",
+            _bulk_title("MTU", rows),
             [("mtu", "MTU", "int", 1500)], self)
         if values and values["mtu"]:
-            self.apply_commands(
-                translator.interface_mtu(row["name"], values["mtu"]))
+            self.apply_for_each(
+                rows, lambda r: translator.interface_mtu(r["name"],
+                                                         values["mtu"]))
 
     def _speed_duplex(self):
-        row = self._need_selection()
-        if not row:
+        rows = self.require_selection("uma ou mais interfaces")
+        if not rows:
             return
         values = SimpleForm.ask(
-            f"Velocidade/Duplex — {row['name']}",
+            _bulk_title("Velocidade/Duplex", rows),
             [("speed", "Velocidade", "choice:auto|10|100|1000", "auto"),
              ("duplex", "Duplex", "choice:auto|full|half", "auto")],
             self)
         if values:
-            cmds = translator.interface_speed(row["name"], values["speed"])
-            cmds += translator.interface_duplex(row["name"], values["duplex"])
-            self.apply_commands(cmds)
+            self.apply_for_each(
+                rows,
+                lambda r: (translator.interface_speed(r["name"],
+                                                      values["speed"])
+                           + translator.interface_duplex(r["name"],
+                                                         values["duplex"])))
 
     def _portswitch(self):
-        row = self._need_selection()
-        if not row:
+        rows = self.require_selection("uma ou mais interfaces")
+        if not rows:
             return
         values = SimpleForm.ask(
-            f"Modo L2/L3 — {row['name']}",
+            _bulk_title("Modo L2/L3", rows),
             [("mode", "Modo", "choice:L2 (portswitch)|L3 (undo portswitch)", "L2 (portswitch)")],
             self)
         if values:
-            self.apply_commands(translator.interface_portswitch(
-                row["name"], to_layer2="L2" in values["mode"]))
+            self.apply_for_each(
+                rows, lambda r: translator.interface_portswitch(
+                    r["name"], to_layer2="L2" in values["mode"]))
 
     def _loopback(self):
         values = SimpleForm.ask(
@@ -350,7 +468,15 @@ class InterfacesPanel(BasePanel):
 
         def done(info: dict):
             self._set_busy(False, "")
-            dlg = InterfaceDetailDialog(row["name"], info, self)
+            dlg = InterfaceDetailDialog(
+                row["name"], info, self,
+                history=history_mod.for_session(self.session))
             dlg.exec()
 
         run_async(fetch, done, self._on_error)
+
+    # ------------------------------------------------------------------ #
+    def closeEvent(self, event):
+        self._rate_timer.stop()
+        self.engine.release_traffic("interfaces-panel")
+        super().closeEvent(event)

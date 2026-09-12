@@ -41,12 +41,17 @@ class AddressesPanel(BasePanel):
                 values["interface"], values["address"], values["mask"]))
 
     def _remove(self):
-        row = self.selected_row()
-        if not row or "/" not in row["ip"]:
+        rows = [r for r in self.require_selection("uma ou mais linhas")
+                if "/" in r["ip"]]
+        if not rows:
             QMessageBox.information(
                 self, self.title,
-                "Selecione uma linha que tenha um endereço IP atribuído.")
+                "Nenhuma das linhas selecionadas tem endereço IP atribuído.")
             return
-        address, prefix = row["ip"].split("/", 1)
-        self.apply_commands(translator.interface_ip(
-            row["name"], address, prefix, remove=True))
+
+        def build(row):
+            address, prefix = row["ip"].split("/", 1)
+            return translator.interface_ip(row["name"], address, prefix,
+                                           remove=True)
+
+        self.apply_for_each(rows, build)

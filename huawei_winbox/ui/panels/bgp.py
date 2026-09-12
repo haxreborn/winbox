@@ -713,25 +713,24 @@ class BgpPanel(BasePanel):
 
         return rows
 
-    def _on_rows(self, rows):
-        self._rows = rows
-        self.table.setRowCount(0)
-        for row in rows:
-            r = self.table.rowCount()
-            self.table.insertRow(r)
-            for c, value in enumerate(self.row_values(row)):
-                item = QTableWidgetItem(str(value))
-                item.setData(Qt.UserRole, row)
-                self.table.setItem(r, c, item)
-            state = row.get("state", "").lower()
-            color = (Qt.darkGreen if "established" in state
-                     else Qt.darkGray if "idle" in state or "active" in state
-                     else Qt.darkYellow)
-            for c in range(self.table.columnCount()):
-                it = self.table.item(r, c)
-                if it:
-                    it.setForeground(color)
+    def style_row(self, index, row):
+        state = row.get("state", "").lower()
+        color = (Qt.darkGreen if "established" in state
+                 else Qt.darkGray if "idle" in state or "active" in state
+                 else Qt.darkYellow)
+        for column in range(self.table.columnCount()):
+            item = self.table.item(index, column)
+            if item:
+                item.setForeground(color)
 
+    def _on_rows(self, rows):
+        # Antes este método era uma cópia inteira do da base, e por isso
+        # ficava de fora de tudo o que ela ganhasse depois — o filtro Find
+        # deixava de ser reaplicado ao atualizar, e a seleção era perdida.
+        # A cor das linhas agora vem do gancho style_row.
+        super()._on_rows(rows)
+        if rows is None:
+            return
         suffix = f" — AS local {self.local_as}" if self.local_as else ""
         self._set_busy(False, f"{len(rows)} vizinho(s){suffix}")
 
@@ -823,34 +822,44 @@ class BgpPanel(BasePanel):
         self.apply_commands(cmds)
 
     def _remove_peer(self):
-        row = self.selected_row()
-        if not row:
-            QMessageBox.information(self, self.title, "Selecione um vizinho.")
+        rows = self.require_selection("um ou mais vizinhos")
+        if not rows:
             return
         local_as = self._require_as()
-        if local_as:
-            self.apply_commands(translator.bgp_peer(
-                local_as, row["peer"], 0, remove=True))
+        if not local_as:
+            return
+        # Remover vizinho é destrutivo: confirma quantos antes de mostrar o
+        # CLI. A pré-visualização ainda vem depois, como em toda alteração.
+        if len(rows) > 1 and QMessageBox.question(
+                self, self.title,
+                f"Remover {len(rows)} vizinhos BGP?\n\n"
+                + ", ".join(r["peer"] for r in rows[:8])
+                + ("…" if len(rows) > 8 else ""),
+                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+            return
+        self.apply_for_each(
+            rows, lambda r: translator.bgp_peer(local_as, r["peer"], 0,
+                                                remove=True))
 
     def _disable_peer(self):
-        row = self.selected_row()
-        if not row:
-            QMessageBox.information(self, self.title, "Selecione um vizinho.")
+        rows = self.require_selection("um ou mais vizinhos")
+        if not rows:
             return
         local_as = self._require_as()
         if local_as:
-            self.apply_commands(translator.bgp_peer_ignore(
-                local_as, row["peer"], ignore=True))
+            self.apply_for_each(
+                rows, lambda r: translator.bgp_peer_ignore(
+                    local_as, r["peer"], ignore=True))
 
     def _enable_peer(self):
-        row = self.selected_row()
-        if not row:
-            QMessageBox.information(self, self.title, "Selecione um vizinho.")
+        rows = self.require_selection("um ou mais vizinhos")
+        if not rows:
             return
         local_as = self._require_as()
         if local_as:
-            self.apply_commands(translator.bgp_peer_ignore(
-                local_as, row["peer"], ignore=False))
+            self.apply_for_each(
+                rows, lambda r: translator.bgp_peer_ignore(
+                    local_as, r["peer"], ignore=False))
 
     def _add_network(self):
         values = SimpleForm.ask(

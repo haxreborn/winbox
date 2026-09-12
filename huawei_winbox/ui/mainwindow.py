@@ -17,12 +17,17 @@ from PySide6.QtWidgets import (
     QMessageBox, QApplication, QStyle, QSizePolicy,
 )
 
-from ..core.session import HuaweiSession
-from ..core import parsers
+from ..core.session import HuaweiSession, INTERACTIVE
+from ..core import telemetry, workspace
+from ..core import history as history_mod
 from . import icons
+from .forms import SimpleForm
+from .palette import CommandPalette
 from .worker import run_async
+from .panels.dashboard import DashboardPanel
 from .panels.interfaces import InterfacesPanel
 from .panels.traffic import TrafficPanel
+from .panels.config import ConfigPanel
 from .panels.addresses import AddressesPanel
 from .panels.vlans import VlansPanel
 from .panels.routes import RoutesPanel
@@ -40,6 +45,10 @@ from .panels.lldp import LldpPanel
 from .panels.services import ServicesPanel
 from .panels.snmp import SnmpPanel
 from .panels.logs import LogsPanel
+from .panels.alarms import AlarmsPanel
+from .panels.porthealth import PortHealthPanel
+from .panels.locate import LocatePanel
+from .panels.healthcheck import HealthCheckPanel
 from .panels.tools import ToolsPanel
 from .panels.system import SystemPanel
 from .panels.terminal import TerminalPanel
@@ -52,8 +61,12 @@ from .panels.hardware import HardwarePanel
 from .panels.mactable import MacTablePanel
 
 _MENU = [
+    ("Painel", DashboardPanel),
+    ("Verificação", HealthCheckPanel),
+    ("Localizar", LocatePanel),
     ("Interfaces", InterfacesPanel),
     ("Tráfego (gráfico)", TrafficPanel),
+    ("Configuração", ConfigPanel),
     ("Endereços IP", AddressesPanel),
     ("VLANs", VlansPanel),
     ("Tabela MAC", MacTablePanel),
@@ -76,6 +89,8 @@ _MENU = [
     ("Vizinhos (LLDP)", LldpPanel),
     ("Serviços", ServicesPanel),
     ("SNMP", SnmpPanel),
+    ("Saúde das portas", PortHealthPanel),
+    ("Alarmes", AlarmsPanel),
     ("Logs", LogsPanel),
     ("Hardware", HardwarePanel),
     ("Ferramentas", ToolsPanel),
@@ -110,7 +125,7 @@ class _ProductStrip(QWidget):
         p.end()
 
 
-def _load_color(pct: int | None) -> str:
+def _load_color(pct: float | None) -> str:
     if pct is None:
         return "#9a9a9a"
     if pct < 60:
@@ -127,9 +142,19 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(
             f"HuaweiBox — {session.hostname} ({session.host}) "
             f"— sessão SSH de {session.username}")
-        self.resize(1140, 720)
+        self.resize(1240, 780)
         self._windows: dict[str, QMdiSubWindow] = {}
-        self._load_busy = False
+        # Coletor único da aplicação: a barra de ferramentas, o Painel e o
+        # gráfico de tráfego leem daqui em vez de cada um consultar o
+        # equipamento por conta própria.
+        self.history = history_mod.for_session(session)
+        self.telemetry = telemetry.for_session(session, self.history)
+        # Preferências deste equipamento (janelas abertas, fonte e cadência
+        # da telemetria, comunidade SNMP). Aplicadas antes de subir o
+        # coletor para ele já começar do jeito certo.
+        self._workspace = workspace.load(session.host)
+        self._apply_workspace_telemetry()
+        self.telemetry.start()
 
         self._build_menubar()
         self._build_toolbar()
@@ -159,6 +184,13 @@ class MainWindow(QMainWindow):
 
         # ── Status bar ────────────────────────────────────────────────── #
         status = QStatusBar()
+        self.queue_label = QLabel("")
+        self.queue_label.setObjectName("loadText")
+        self.queue_label.setToolTip(
+            "Estado da fila de comandos SSH. Cliques do usuário passam à "
+            "frente das atualizações automáticas, e consultas repetidas "
+            "entre janelas são unificadas.")
+        status.addPermanentWidget(self.queue_label)
         badge = QLabel("conectado")
         badge.setObjectName("connBadge")
         status.addPermanentWidget(badge)
@@ -167,15 +199,101 @@ class MainWindow(QMainWindow):
             "Toda configuração mostra o CLI gerado antes de ser enviada.")
         self.setStatusBar(status)
 
-        # Indicadores de carga (Memória/CPU) atualizados periodicamente.
+        # A barra só LÊ o retrato do coletor — nada de consulta própria.
         self._load_timer = QTimer(self)
         self._load_timer.timeout.connect(self._poll_load)
         self._set_load_interval(5)
 
-        # Abre Interfaces de cara, como primeiro contato.
-        self.menu.setCurrentRow(0)
-        self._open_panel(self.menu.item(0))
+        # Reabre o que estava aberto na última sessão com este equipamento;
+        # na primeira vez, abre o Painel — a visão geral de uma vez só.
+        if not self._restore_windows():
+            self.menu.setCurrentRow(0)
+            self._open_panel(self.menu.item(0))
         QTimer.singleShot(400, self._poll_load)
+
+    # ================================================================== #
+    # Preferências por equipamento
+    # ================================================================== #
+    def _apply_workspace_telemetry(self) -> None:
+        saved = self._workspace
+        community = saved.get("snmp_community")
+        if community:
+            self.telemetry.configure_snmp(community,
+                                          int(saved.get("snmp_port") or 161))
+        source = saved.get("telemetry_source")
+        if source in telemetry.SOURCE_LABELS:
+            self.telemetry.set_source(source)
+        interval = saved.get("telemetry_interval")
+        if isinstance(interval, (int, float)) and interval > 0:
+            self.telemetry.set_interval(interval)
+
+    def _restore_windows(self) -> bool:
+        """Reabre as janelas da última sessão. True se abriu alguma."""
+        entries = self._workspace.get("windows")
+        if not isinstance(entries, list) or not entries:
+            return False
+        known = dict(_MENU)
+        opened = 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            label = entry.get("label")
+            if label not in known:
+                continue        # módulo renomeado ou removido numa atualização
+            items = self.menu.findItems(label, Qt.MatchExactly)
+            if not items:
+                continue
+            try:
+                self._open_panel(items[0])
+            except Exception:            # noqa: BLE001 — layout nunca bloqueia
+                continue
+            window = self._windows.get(label)
+            geometry = entry.get("geometry")
+            if window is not None and isinstance(geometry, list) \
+                    and len(geometry) == 4:
+                try:
+                    window.setGeometry(*(int(v) for v in geometry))
+                except (TypeError, ValueError):
+                    pass
+            opened += 1
+        return opened > 0
+
+    def _collect_workspace(self) -> dict:
+        windows = []
+        for label, window in self._windows.items():
+            if window is None or not shiboken6.isValid(window):
+                continue
+            rect = window.geometry()
+            windows.append({
+                "label": label,
+                "geometry": [rect.x(), rect.y(), rect.width(), rect.height()],
+            })
+        snapshot = self.telemetry.snapshot()
+        values = {
+            "windows": windows,
+            "telemetry_source": snapshot["requested_source"],
+            "telemetry_interval": snapshot["interval"],
+        }
+        if self.telemetry.community and self.telemetry.community != "public":
+            values["snmp_community"] = self.telemetry.community
+            values["snmp_port"] = self.telemetry.snmp_port
+        # Cada painel pode contribuir com o seu próprio estado.
+        for label, window in self._windows.items():
+            if window is None or not shiboken6.isValid(window):
+                continue
+            panel = window.widget()
+            collect = getattr(panel, "collect_state", None)
+            if callable(collect):
+                try:
+                    state = collect()
+                except Exception:        # noqa: BLE001 — nunca impede o fechar
+                    continue
+                if isinstance(state, dict):
+                    # Chave própria do painel quando existir: sobrevive a
+                    # uma renomeação do item de menu.
+                    key = getattr(panel, "state_key", None) or label
+                    values.setdefault("panels", {})[key] = state
+        return values
 
     # ================================================================== #
     # Construção da casca
@@ -206,6 +324,35 @@ class MainWindow(QMainWindow):
             grp.addAction(a)
             sub.addAction(a)
 
+        # Coleta de telemetria: vale para o gráfico, o Painel e a barra.
+        src_menu = m_cfg.addMenu("Fonte da telemetria")
+        src_group = QActionGroup(self)
+        for key in (telemetry.SOURCE_AUTO, telemetry.SOURCE_SNMP,
+                    telemetry.SOURCE_CLI):
+            action = QAction(telemetry.SOURCE_LABELS[key], self, checkable=True)
+            action.setChecked(key == telemetry.SOURCE_AUTO)
+            action.triggered.connect(
+                lambda _=False, k=key: self.telemetry.set_source(k))
+            src_group.addAction(action)
+            src_menu.addAction(action)
+
+        rate_menu = m_cfg.addMenu("Amostrar tráfego a cada")
+        rate_group = QActionGroup(self)
+        for secs in (1, 2, 3, 5, 10, 30):
+            action = QAction(f"{secs} s", self, checkable=True)
+            action.setChecked(secs == 2)
+            action.triggered.connect(
+                lambda _=False, s=secs: self.telemetry.set_interval(s))
+            rate_group.addAction(action)
+            rate_menu.addAction(action)
+
+        act_snmp = QAction("Comunidade SNMP para leitura…", self)
+        act_snmp.setToolTip(
+            "Com o agente SNMP habilitado, a coleta usa GET-BULK: todas as "
+            "interfaces numa amostra só, sem gastar a sessão SSH.")
+        act_snmp.triggered.connect(self._ask_snmp_community)
+        m_cfg.addAction(act_snmp)
+
         m_win = bar.addMenu("&Janelas")
         for label, slot in [
             ("Lado a lado", lambda: self.mdi.tileSubWindows()),
@@ -215,6 +362,13 @@ class MainWindow(QMainWindow):
             a = QAction(label, self)
             a.triggered.connect(slot)
             m_win.addAction(a)
+
+        act_find = QAction("Ir para módulo…", self)
+        act_find.setShortcut("Ctrl+K")
+        act_find.setToolTip("Abre qualquer módulo ou ação digitando o nome.")
+        act_find.triggered.connect(self._open_palette)
+        m_win.addSeparator()
+        m_win.addAction(act_find)
 
         m_help = bar.addMenu("&Ajuda")
         a_about = QAction("Sobre o HuaweiBox", self)
@@ -305,7 +459,9 @@ class MainWindow(QMainWindow):
     def _set_load_interval(self, secs: int) -> None:
         self._load_interval = secs
         if secs:
-            self._load_timer.start(secs * 1000)
+            # O coletor amostra na cadência do gráfico; este intervalo só
+            # controla de quanto em quanto tempo a barra relê o retrato.
+            self._load_timer.start(max(1, secs) * 1000)
             self._poll_load()
         else:
             self._load_timer.stop()
@@ -315,39 +471,32 @@ class MainWindow(QMainWindow):
             self._paint_square(self.cpu_square, None)
 
     def _poll_load(self) -> None:
-        if self._load_busy or not self.session.connected:
+        """Lê o último retrato do coletor — sem tocar no equipamento."""
+        if not self.session.connected:
             return
-        self._load_busy = True
+        snapshot = self.telemetry.snapshot()
+        health = snapshot["health"]
+        cpu, mem = health.get("cpu"), health.get("memory")
+        self.cpu_label.setText(
+            f"CPU: {cpu:.0f}%" if cpu is not None else "CPU: —")
+        self.mem_label.setText(
+            f"Memória: {mem:.0f}%" if mem is not None else "Memória: —")
+        self._paint_square(self.cpu_square, cpu)
+        self._paint_square(self.mem_square, mem)
 
-        def fetch():
-            cpu = parsers.parse_cpu_usage(
-                self.session.run("display cpu-usage", timeout=8.0))
-            mem = parsers.parse_memory_usage(
-                self.session.run("display memory-usage", timeout=8.0))
-            return cpu, mem
-
-        run_async(fetch, self._on_load, self._on_load_err)
-
-    def _on_load(self, data) -> None:
-        self._load_busy = False
-        cpu, mem = data
-        self.cpu_label.setText(f"CPU: {cpu}")
-        self.mem_label.setText(f"Memória: {mem}")
-        self._paint_square(self.cpu_square, self._pct(cpu))
-        self._paint_square(self.mem_square, self._pct(mem))
-
-    def _on_load_err(self, _msg: str) -> None:
-        self._load_busy = False
-
-    @staticmethod
-    def _pct(text: str) -> int | None:
-        try:
-            return int(str(text).rstrip("%"))
-        except (TypeError, ValueError):
-            return None
+        stats = self.session.scheduler.stats()
+        pieces = []
+        if stats["depth"]:
+            pieces.append(f"fila {stats['depth']}")
+        saved = stats["cache_hits"] + stats["coalesced"]
+        if saved:
+            pieces.append(f"{saved} consultas evitadas")
+        if stats["dropped"]:
+            pieces.append(f"{stats['dropped']} descartadas")
+        self.queue_label.setText(" · ".join(pieces))
 
     @staticmethod
-    def _paint_square(square: QLabel, pct: int | None) -> None:
+    def _paint_square(square: QLabel, pct: float | None) -> None:
         square.setStyleSheet(
             f"background:{_load_color(pct)}; border:1px solid #6a6a6a; "
             f"border-radius:2px;")
@@ -355,6 +504,56 @@ class MainWindow(QMainWindow):
     # ================================================================== #
     # Ações
     # ================================================================== #
+    def _palette_entries(self) -> list[tuple[str, str, object]]:
+        """Módulos e ações globais oferecidos pela busca (Ctrl+K)."""
+        entries: list[tuple[str, str, object]] = [
+            (label, "módulo",
+             (lambda l=label: self.open_named_panel(l)))
+            for label, _cls in _MENU
+        ]
+        entries += [
+            ("Gerar relatório do equipamento", "ação", self._open_report),
+            ("Salvar configuração na flash", "ação", self._save_config),
+            ("Fechar todas as janelas", "ação",
+             self.mdi.closeAllSubWindows),
+            ("Organizar janelas lado a lado", "ação", self.mdi.tileSubWindows),
+            ("Organizar janelas em cascata", "ação",
+             self.mdi.cascadeSubWindows),
+            ("Comunidade SNMP para leitura", "ação", self._ask_snmp_community),
+            ("Desconectar", "ação", self.close),
+        ]
+        if self.session.supports_safe_mode:
+            entries.append(("Alternar Safe Mode", "ação",
+                            self.safe_btn.toggle))
+        return entries
+
+    def _open_report(self) -> None:
+        """Abre o Painel e dispara a geração do relatório."""
+        self.open_named_panel("Painel")
+        window = self._windows.get("Painel")
+        if window is not None and shiboken6.isValid(window):
+            panel = window.widget()
+            if hasattr(panel, "_build_report"):
+                panel._build_report()
+
+    def _open_palette(self) -> None:
+        dialog = CommandPalette(self._palette_entries(), self)
+        dialog.exec()
+
+    def _ask_snmp_community(self) -> None:
+        values = SimpleForm.ask(
+            "Coleta via SNMP (somente leitura)",
+            [("community", "Comunidade de leitura", "text", "public"),
+             ("port", "Porta UDP", "int", 161)],
+            self)
+        if not values:
+            return
+        self.telemetry.configure_snmp(values["community"], values["port"])
+        self.telemetry.poke()
+        self.statusBar().showMessage(
+            "Comunidade SNMP aplicada — a coleta passa a usar SNMP assim que "
+            "o agente responder.", 6000)
+
     def _safe_toggled(self, on: bool) -> None:
         self.session.safe_mode = on
         if on:
@@ -375,7 +574,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Salvando configuração...", 0)
 
         def do_save():
-            return self.session.run("save", timeout=60.0)
+            return self.session.run("save", timeout=60.0,
+                                    priority=INTERACTIVE)
 
         def done(out: str):
             self.statusBar().showMessage("Configuração salva.", 5000)
@@ -398,6 +598,30 @@ class MainWindow(QMainWindow):
     # ================================================================== #
     # Painéis (janelas internas)
     # ================================================================== #
+    def open_named_panel(self, label: str, payload=None) -> None:
+        """Abre um módulo pelo nome e, se ele aceitar, entrega um alvo.
+
+        É o que liga os painéis entre si — "Ver no gráfico" na tabela de
+        Interfaces abre o Tráfego já com aquelas portas marcadas, em vez de
+        obrigar a procurá-las de novo na lista.
+        """
+        items = self.menu.findItems(label, Qt.MatchExactly)
+        if not items:
+            return
+        self.menu.setCurrentItem(items[0])
+        self._open_panel(items[0])
+        window = self._windows.get(label)
+        if window is None or not shiboken6.isValid(window):
+            return
+        # Traz para a frente explicitamente: a janela pode já estar aberta
+        # atrás de outra, e quem pediu espera vê-la.
+        window.show()
+        window.raise_()
+        self.mdi.setActiveSubWindow(window)
+        panel = window.widget()
+        if payload is not None and hasattr(panel, "focus_payload"):
+            panel.focus_payload(payload)
+
     def _open_panel(self, item):
         label = item.text()
         existing = self._windows.get(label)
@@ -410,6 +634,10 @@ class MainWindow(QMainWindow):
 
         panel_cls = dict(_MENU)[label]
         panel = panel_cls(self.session)
+        # Painéis que sabem pedir a abertura de outro módulo (opcional).
+        request = getattr(panel, "open_panel_requested", None)
+        if request is not None:
+            request.connect(self.open_named_panel)
         sub = QMdiSubWindow()
         sub.setWidget(panel)
         sub.setWindowTitle(label)
@@ -439,5 +667,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._load_timer.stop()
+        try:
+            workspace.save(self.session.host, self._collect_workspace())
+        except Exception:               # noqa: BLE001 — nunca trava o fechar
+            pass
+        telemetry.release(self.session)
         self.session.close()
         super().closeEvent(event)
